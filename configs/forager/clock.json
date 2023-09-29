@@ -1,0 +1,245 @@
+{
+  // supported exchanges: [kucoin, okx, bybit, binance]
+  user: binance_01
+  twe_long: 20
+  twe_short: 8
+  n_longs: 20
+  n_shorts: 20
+  max_min_cost: 5.0
+  n_ohlcvs: 100
+  ohlcv_interval: 1h
+  leverage: 10
+  price_distance_threshold: 0.05
+
+  // set to zero to disable
+  volume_clip_threshold: 0.51  // include 51% of the highest volume coins
+  unilateralness_clip_threshold: 0.49 // include 49% of symbols with lowest unilateralness
+  noisiness_clip_threshold: 0.52 // include 52% of symbols with highest noisiness
+
+  max_n_panes: 4
+
+  // forager restarts bots every x minutes
+  update_interval_minutes: 30
+
+  // Don't create bots with these symbols
+  symbols_to_ignore: [
+  ]
+
+  // if symbol is missing from live_configs_map, default to this config
+  default_config_path: configs/live/cargaydescarga.json
+
+  // if true, allow only symbols present in live_configs_map or live_configs_map_{long/short}
+  // if false, will use default_config_path when symbol is missing from live_configs_map
+  approved_symbols_only: false
+
+  // if symbol is present in live_configs_map_{long/short}, use that config for {long/short}
+  // elif symbol is present in live_configs_map, use that config for {long/short}
+  // else use default_config_path for {long/short}
+
+  live_configs_map: {
+   ZRXUSDT: configs/live/clock/ZRXUSDT.json
+   ZILUSDT: configs/live/clock/ZILUSDT.json
+   ZENUSDT: configs/live/clock/ZENUSDT.json
+   ZECUSDT: configs/live/clock/ZECUSDT.json
+   YGGUSDT: configs/live/clock/YGGUSDT.json
+   YFIUSDT: configs/live/clock/YFIUSDT.json
+   XVSUSDT: configs/live/clock/XVSUSDT.json
+   XVGUSDT: configs/live/clock/XVGUSDT.json
+   XTZUSDT: configs/live/clock/XTZUSDT.json
+   XRPUSDT: configs/live/clock/XRPUSDT.json
+   XMRUSDT: configs/live/clock/XMRUSDT.json
+   XLMUSDT: configs/live/clock/XLMUSDT.json
+   XEMUSDT: configs/live/clock/XEMUSDT.json
+   WOOUSDT: configs/live/clock/WOOUSDT.json
+   WLDUSDT: configs/live/clock/WLDUSDT.json
+   WAVESUSDT: configs/live/clock/WAVESUSDT.json
+   VETUSDT: configs/live/clock/VETUSDT.json
+   USDCUSDT: configs/live/clock/USDCUSDT.json
+   UNIUSDT: configs/live/clock/UNIUSDT.json
+   UNFIUSDT: configs/live/clock/UNFIUSDT.json
+   UMAUSDT: configs/live/clock/UMAUSDT.json
+   TUSDT: configs/live/clock/TUSDT.json
+   TRXUSDT: configs/live/clock/TRXUSDT.json
+   TRUUSDT: configs/live/clock/TRUUSDT.json
+   TRBUSDT: configs/live/clock/TRBUSDT.json
+   TOMOUSDT: configs/live/clock/TOMOUSDT.json
+   TLMUSDT: configs/live/clock/TLMUSDT.json
+   THETAUSDT: configs/live/clock/THETAUSDT.json
+   SXPUSDT: configs/live/clock/SXPUSDT.json
+   SUSHIUSDT: configs/live/clock/SUSHIUSDT.json
+   SUIUSDT: configs/live/clock/SUIUSDT.json
+   STXUSDT: configs/live/clock/STXUSDT.json
+   STORJUSDT: configs/live/clock/STORJUSDT.json
+   STMXUSDT: configs/live/clock/STMXUSDT.json
+   STGUSDT: configs/live/clock/STGUSDT.json
+   SSVUSDT: configs/live/clock/SSVUSDT.json
+   SPELLUSDT: configs/live/clock/SPELLUSDT.json
+   SOLUSDT: configs/live/clock/SOLUSDT.json
+   SNXUSDT: configs/live/clock/SNXUSDT.json
+   SKLUSDT: configs/live/clock/SKLUSDT.json
+   SFPUSDT: configs/live/clock/SFPUSDT.json
+   SANDUSDT: configs/live/clock/SANDUSDT.json
+   RVNUSDT: configs/live/clock/RVNUSDT.json
+   RUNEUSDT: configs/live/clock/RUNEUSDT.json
+   RSRUSDT: configs/live/clock/RSRUSDT.json
+   ROSEUSDT: configs/live/clock/ROSEUSDT.json
+   RNDRUSDT: configs/live/clock/RNDRUSDT.json
+   RLCUSDT: configs/live/clock/RLCUSDT.json
+   RENUSDT: configs/live/clock/RENUSDT.json
+   REEFUSDT: configs/live/clock/REEFUSDT.json
+   RDNTUSDT: configs/live/clock/RDNTUSDT.json
+   RADUSDT: configs/live/clock/RADUSDT.json
+   QTUMUSDT: configs/live/clock/QTUMUSDT.json
+   QNTUSDT: configs/live/clock/QNTUSDT.json
+   PHBUSDT: configs/live/clock/PHBUSDT.json
+   PERPUSDT: configs/live/clock/PERPUSDT.json
+   PEOPLEUSDT: configs/live/clock/PEOPLEUSDT.json
+   PENDLEUSDT: configs/live/clock/PENDLEUSDT.json
+   OPUSDT: configs/live/clock/OPUSDT.json
+   ONTUSDT: configs/live/clock/ONTUSDT.json
+   ONEUSDT: configs/live/clock/ONEUSDT.json
+   OMGUSDT: configs/live/clock/OMGUSDT.json
+   OGNUSDT: configs/live/clock/OGNUSDT.json
+   OCEANUSDT: configs/live/clock/OCEANUSDT.json
+   NMRUSDT: configs/live/clock/NMRUSDT.json
+   NKNUSDT: configs/live/clock/NKNUSDT.json
+   NEOUSDT: configs/live/clock/NEOUSDT.json
+   NEARUSDT: configs/live/clock/NEARUSDT.json
+   MTLUSDT: configs/live/clock/MTLUSDT.json
+   MKRUSDT: configs/live/clock/MKRUSDT.json
+   MINAUSDT: configs/live/clock/MINAUSDT.json
+   MDTUSDT: configs/live/clock/MDTUSDT.json
+   MAVUSDT: configs/live/clock/MAVUSDT.json
+   MATICUSDT: configs/live/clock/MATICUSDT.json
+   MASKUSDT: configs/live/clock/MASKUSDT.json
+   MANAUSDT: configs/live/clock/MANAUSDT.json
+   MAGICUSDT: configs/live/clock/MAGICUSDT.json
+   LUNA2USDT: configs/live/clock/LUNA2USDT.json
+   LTCUSDT: configs/live/clock/LTCUSDT.json
+   LRCUSDT: configs/live/clock/LRCUSDT.json
+   LQTYUSDT: configs/live/clock/LQTYUSDT.json
+   LPTUSDT: configs/live/clock/LPTUSDT.json
+   LITUSDT: configs/live/clock/LITUSDT.json
+   LINKUSDT: configs/live/clock/LINKUSDT.json
+   LINAUSDT: configs/live/clock/LINAUSDT.json
+   LEVERUSDT: configs/live/clock/LEVERUSDT.json
+   LDOUSDT: configs/live/clock/LDOUSDT.json
+   KSMUSDT: configs/live/clock/KSMUSDT.json
+   KNCUSDT: configs/live/clock/KNCUSDT.json
+   KLAYUSDT: configs/live/clock/KLAYUSDT.json
+   KEYUSDT: configs/live/clock/KEYUSDT.json
+   KAVAUSDT: configs/live/clock/KAVAUSDT.json
+   JOEUSDT: configs/live/clock/JOEUSDT.json
+   JASMYUSDT: configs/live/clock/JASMYUSDT.json
+   IOTXUSDT: configs/live/clock/IOTXUSDT.json
+   IOTAUSDT: configs/live/clock/IOTAUSDT.json
+   IOSTUSDT: configs/live/clock/IOSTUSDT.json
+   INJUSDT: configs/live/clock/INJUSDT.json
+   IMXUSDT: configs/live/clock/IMXUSDT.json
+   IDUSDT: configs/live/clock/IDUSDT.json
+   IDEXUSDT: configs/live/clock/IDEXUSDT.json
+   ICXUSDT: configs/live/clock/ICXUSDT.json
+   ICPUSDT: configs/live/clock/ICPUSDT.json
+   HOTUSDT: configs/live/clock/HOTUSDT.json
+   HOOKUSDT: configs/live/clock/HOOKUSDT.json
+   HIGHUSDT: configs/live/clock/HIGHUSDT.json
+   HFTUSDT: configs/live/clock/HFTUSDT.json
+   HBARUSDT: configs/live/clock/HBARUSDT.json
+   GTCUSDT: configs/live/clock/GTCUSDT.json
+   GRTUSDT: configs/live/clock/GRTUSDT.json
+   GMXUSDT: configs/live/clock/GMXUSDT.json
+   GMTUSDT: configs/live/clock/GMTUSDT.json
+   GALUSDT: configs/live/clock/GALUSDT.json
+   GALAUSDT: configs/live/clock/GALAUSDT.json
+   FXSUSDT: configs/live/clock/FXSUSDT.json
+   FTMUSDT: configs/live/clock/FTMUSDT.json
+   FOOTBALLUSDT: configs/live/clock/FOOTBALLUSDT.json
+   FLOWUSDT: configs/live/clock/FLOWUSDT.json
+   FLMUSDT: configs/live/clock/FLMUSDT.json
+   FILUSDT: configs/live/clock/FILUSDT.json
+   FETUSDT: configs/live/clock/FETUSDT.json
+   ETHUSDT: configs/live/clock/ETHUSDT.json
+   ETCUSDT: configs/live/clock/ETCUSDT.json
+   EOSUSDT: configs/live/clock/EOSUSDT.json
+   ENSUSDT: configs/live/clock/ENSUSDT.json
+   ENJUSDT: configs/live/clock/ENJUSDT.json
+   EGLDUSDT: configs/live/clock/EGLDUSDT.json
+   EDUUSDT: configs/live/clock/EDUUSDT.json
+   DYDXUSDT: configs/live/clock/DYDXUSDT.json
+   DUSKUSDT: configs/live/clock/DUSKUSDT.json
+   DOTUSDT: configs/live/clock/DOTUSDT.json
+   DOGEUSDT: configs/live/clock/DOGEUSDT.json
+   DGBUSDT: configs/live/clock/DGBUSDT.json
+   DENTUSDT: configs/live/clock/DENTUSDT.json
+   DEFIUSDT: configs/live/clock/DEFIUSDT.json
+   DASHUSDT: configs/live/clock/DASHUSDT.json
+   DARUSDT: configs/live/clock/DARUSDT.json
+   CVXUSDT: configs/live/clock/CVXUSDT.json
+   CTSIUSDT: configs/live/clock/CTSIUSDT.json
+   CTKUSDT: configs/live/clock/CTKUSDT.json
+   CRVUSDT: configs/live/clock/CRVUSDT.json
+   COTIUSDT: configs/live/clock/COTIUSDT.json
+   COMPUSDT: configs/live/clock/COMPUSDT.json
+   COMBOUSDT: configs/live/clock/COMBOUSDT.json
+   COCOSUSDT: configs/live/clock/COCOSUSDT.json
+   CKBUSDT: configs/live/clock/CKBUSDT.json
+   CHZUSDT: configs/live/clock/CHZUSDT.json
+   CHRUSDT: configs/live/clock/CHRUSDT.json
+   CFXUSDT: configs/live/clock/CFXUSDT.json
+   CELRUSDT: configs/live/clock/CELRUSDT.json
+   CELOUSDT: configs/live/clock/CELOUSDT.json
+   C98USDT: configs/live/clock/C98USDT.json
+   BTCUSDT: configs/live/clock/BTCUSDT.json
+   BTCDOMUSDT: configs/live/clock/BTCDOMUSDT.json
+   BNXUSDT: configs/live/clock/BNXUSDT.json
+   BNBUSDT: configs/live/clock/BNBUSDT.json
+   BLZUSDT: configs/live/clock/BLZUSDT.json
+   BLURUSDT: configs/live/clock/BLURUSDT.json
+   BLUEBIRDUSDT: configs/live/clock/BLUEBIRDUSDT.json
+   BELUSDT: configs/live/clock/BELUSDT.json
+   BCHUSDT: configs/live/clock/BCHUSDT.json
+   BATUSDT: configs/live/clock/BATUSDT.json
+   BANDUSDT: configs/live/clock/BANDUSDT.json
+   BALUSDT: configs/live/clock/BALUSDT.json
+   BAKEUSDT: configs/live/clock/BAKEUSDT.json
+   AXSUSDT: configs/live/clock/AXSUSDT.json
+   AVAXUSDT: configs/live/clock/AVAXUSDT.json
+   AUDIOUSDT: configs/live/clock/AUDIOUSDT.json
+   ATOMUSDT: configs/live/clock/ATOMUSDT.json
+   ATAUSDT: configs/live/clock/ATAUSDT.json
+   ASTRUSDT: configs/live/clock/ASTRUSDT.json
+   ARUSDT: configs/live/clock/ARUSDT.json
+   ARPAUSDT: configs/live/clock/ARPAUSDT.json
+   ARKMUSDT: configs/live/clock/ARKMUSDT.json
+   ARBUSDT: configs/live/clock/ARBUSDT.json
+   APTUSDT: configs/live/clock/APTUSDT.json
+   API3USDT: configs/live/clock/API3USDT.json
+   APEUSDT: configs/live/clock/APEUSDT.json
+   ANTUSDT: configs/live/clock/ANTUSDT.json
+   ANKRUSDT: configs/live/clock/ANKRUSDT.json
+   AMBUSDT: configs/live/clock/AMBUSDT.json
+   ALPHAUSDT: configs/live/clock/ALPHAUSDT.json
+   ALICEUSDT: configs/live/clock/ALICEUSDT.json
+   ALGOUSDT: configs/live/clock/ALGOUSDT.json
+   AGLDUSDT: configs/live/clock/AGLDUSDT.json
+   AGIXUSDT: configs/live/clock/AGIXUSDT.json
+   ADAUSDT: configs/live/clock/ADAUSDT.json
+   ACHUSDT: configs/live/clock/ACHUSDT.json
+   AAVEUSDT: configs/live/clock/AAVEUSDT.json
+   1INCHUSDT: configs/live/clock/1INCHUSDT.json
+   1000XECUSDT: configs/live/clock/1000XECUSDT.json
+   1000SHIBUSDT: configs/live/clock/1000SHIBUSDT.json
+   1000PEPEUSDT: configs/live/clock/1000PEPEUSDT.json
+   1000LUNCUSDT: configs/live/clock/1000LUNCUSDT.json
+   1000FLOKIUSDT: configs/live/clock/1000FLOKIUSDT.json
+  }
+
+  // will override long configs from live_configs_map
+  live_configs_map_long: {
+  }
+
+  // will override short configs from live_configs_map
+  live_configs_map_short: {
+  }
+
+}
