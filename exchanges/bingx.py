@@ -2,6 +2,7 @@ import asyncio
 import traceback
 import os
 import json
+import numpy as np
 
 from uuid import uuid4
 from njit_funcs import calc_diff
@@ -16,9 +17,9 @@ assert (
 ), f"Currently ccxt {ccxt.__version__} is installed. Please pip reinstall requirements.txt or install ccxt v4.0.57 manually"
 
 
-class BybitBot(Bot):
+class BingXBot(Bot):
     def __init__(self, config: dict):
-        self.exchange = "bybit"
+        self.exchange = "bingx"
         self.market_type = config["market_type"] = "linear_perpetual"
         self.inverse = config["inverse"] = False
 
@@ -26,11 +27,11 @@ class BybitBot(Bot):
         self.max_n_cancellations_per_batch = 10
 
         super().__init__(config)
-        self.cc = getattr(ccxt, "bybit")(
+        self.cc = getattr(ccxt, "bingx")(
             {
                 "apiKey": self.key,
                 "secret": self.secret,
-                "headers": {"referer": self.broker_code} if self.broker_code else {},
+                # "headers": {"referer": self.broker_code} if self.broker_code else {},
             }
         )
 
@@ -39,7 +40,7 @@ class BybitBot(Bot):
             raise Exception(f"unsupported symbol {self.symbol}")
 
     async def fetch_market_info_from_cache(self):
-        fname = make_get_filepath(f"caches/bybit_market_info.json")
+        fname = make_get_filepath(f"caches/bingx_market_info.json")
         info = None
         try:
             if os.path.exists(fname):
@@ -61,31 +62,41 @@ class BybitBot(Bot):
         info = await self.fetch_market_info_from_cache()
         self.symbol_id = self.symbol
         for elm in info:
-            if elm["id"] == self.symbol_id and elm["type"] == "swap":
+            if elm["baseId"] + elm["quoteId"] == self.symbol_id and elm["type"] == "swap":
                 break
         else:
             raise Exception(f"unsupported symbol {self.symbol}")
+        self.symbol_id = elm["id"]
         self.symbol = elm["symbol"]
         self.max_leverage = elm["limits"]["leverage"]["max"]
         self.coin = elm["base"]
         self.quote = elm["quote"]
-        self.price_step = self.config["price_step"] = elm["precision"]["price"]
-        self.qty_step = self.config["qty_step"] = elm["precision"]["amount"]
-        self.min_qty = self.config["min_qty"] = elm["limits"]["amount"]["min"]
+        self.price_step = self.config["price_step"] = round(
+            1.0 / (10 ** elm["precision"]["price"]), 12
+        )
+        self.qty_step = self.config["qty_step"] = round(1.0 / (10 ** elm["precision"]["amount"]), 12)
+        self.min_qty = self.config["min_qty"] = elm["contractSize"]
         self.min_cost = self.config["min_cost"] = (
-            0.1 if elm["limits"]["cost"]["min"] is None else elm["limits"]["cost"]["min"]
+            2.0 if elm["limits"]["cost"]["min"] is None else elm["limits"]["cost"]["min"]
         )
         self.margin_coin = self.quote
         await super()._init()
 
     async def fetch_ticker(self, symbol=None):
-        ticker = None
+        fetched = None
         try:
-            ticker = await self.cc.fetch_ticker(symbol=self.symbol if symbol is None else symbol)
+            fetched = await self.cc.swap_v2_public_get_quote_depth(
+                params={"symbol": self.symbol_id, "limit": 5}
+            )
+            ticker = {
+                "bid": sorted(floatify(fetched["data"]["bids"]))[-1][0],
+                "ask": sorted(floatify(fetched["data"]["asks"]))[0][0],
+            }
+            ticker["last"] = np.random.choice([ticker["bid"], ticker["ask"]])
             return ticker
         except Exception as e:
             logging.error(f"error fetching ticker {e}")
-            print_async_exception(ticker)
+            print_async_exception(fetched)
             return None
 
     async def init_order_book(self):
@@ -121,6 +132,9 @@ class BybitBot(Bot):
     async def transfer_from_derivatives_to_spot(self, coin: str, amount: float):
         return
 
+    async def fetch_server_time(self):
+        return self.get_server_time()
+
     async def get_server_time(self):
         server_time = None
         try:
@@ -135,9 +149,10 @@ class BybitBot(Bot):
         positions, balance = None, None
         try:
             positions, balance = await asyncio.gather(
-                self.cc.fetch_positions(self.symbol), self.cc.fetch_balance()
+                self.cc.fetch_positions(params={"symbol": self.symbol_id}),
+                self.cc.swap_v2_private_get_user_balance(),
             )
-            positions = [e for e in positions if e["symbol"] == self.symbol]
+            positions = floatify([e for e in positions if e["symbol"] == self.symbol])
             position = {
                 "long": {"size": 0.0, "price": 0.0, "liquidation_price": 0.0},
                 "short": {"size": 0.0, "price": 0.0, "liquidation_price": 0.0},
@@ -148,7 +163,7 @@ class BybitBot(Bot):
                 for p in positions:
                     if p["side"] == "long":
                         position["long"] = {
-                            "size": p["contracts"],
+                            "size": p["notional"],
                             "price": 0.0 if p["entryPrice"] is None else p["entryPrice"],
                             "liquidation_price": p["liquidationPrice"]
                             if p["liquidationPrice"]
@@ -156,13 +171,13 @@ class BybitBot(Bot):
                         }
                     elif p["side"] == "short":
                         position["short"] = {
-                            "size": -abs(p["contracts"]),
+                            "size": -abs(p["notional"]),
                             "price": 0.0 if p["entryPrice"] is None else p["entryPrice"],
                             "liquidation_price": p["liquidationPrice"]
                             if p["liquidationPrice"]
                             else 0.0,
                         }
-            position["wallet_balance"] = balance[self.quote]["total"]
+            position["wallet_balance"] = float(balance["data"]["balance"]["balance"])
             return position
         except Exception as e:
             logging.error(f"error fetching pos or balance {e}")
@@ -170,50 +185,6 @@ class BybitBot(Bot):
             print_async_exception(balance)
             traceback.print_exc()
         return
-
-        positions, balance = None, None
-        try:
-            positions, balance = await asyncio.gather(
-                self.cc.fetch_positions(),
-                self.cc.fetch_balance(),
-            )
-            positions = [e for e in positions if e["symbol"] == self.symbol]
-            position = {
-                "long": {"size": 0.0, "price": 0.0, "liquidation_price": 0.0},
-                "short": {"size": 0.0, "price": 0.0, "liquidation_price": 0.0},
-                "wallet_balance": 0.0,
-                "equity": 0.0,
-            }
-            if positions:
-                for p in positions:
-                    if p["side"] == "long":
-                        position["long"] = {
-                            "size": p["contracts"],
-                            "price": p["entryPrice"],
-                            "liquidation_price": p["liquidationPrice"]
-                            if p["liquidationPrice"]
-                            else 0.0,
-                        }
-                    elif p["side"] == "short":
-                        position["short"] = {
-                            "size": p["contracts"],
-                            "price": p["entryPrice"],
-                            "liquidation_price": p["liquidationPrice"]
-                            if p["liquidationPrice"]
-                            else 0.0,
-                        }
-            if balance:
-                for elm in balance["info"]["data"]:
-                    for elm2 in elm["details"]:
-                        if elm2["ccy"] == self.quote:
-                            position["wallet_balance"] = float(elm2["cashBal"])
-                            break
-            return position
-        except Exception as e:
-            logging.error(f"error fetching pos or balance {e}")
-            print_async_exception(positions)
-            print_async_exception(balance)
-            traceback.print_exc()
 
     async def execute_orders(self, orders: [dict]) -> [dict]:
         return await self.execute_multiple(
@@ -225,13 +196,12 @@ class BybitBot(Bot):
         try:
             executed = await self.cc.create_limit_order(
                 symbol=order["symbol"] if "symbol" in order else self.symbol,
-                side=order["side"],
+                side=order["side"].upper(),
                 amount=abs(order["qty"]),
                 price=order["price"],
                 params={
-                    "positionIdx": 1 if order["position_side"] == "long" else 2,
-                    "timeInForce": "postOnly",
-                    "orderLinkId": order["custom_id"] + str(uuid4()),
+                    "positionSide": order["position_side"].upper(),
+                    "clientOrderID": (order["custom_id"] + str(uuid4()))[:40],
                 },
             )
             if "symbol" not in executed or executed["symbol"] is None:
@@ -268,7 +238,7 @@ class BybitBot(Bot):
                 result = await execution[1]
                 results.append(result)
             except Exception as e:
-                print(f"error executing {type_} {execution} {e}")
+                logging.error(f"error executing {type_} {execution} {e}")
                 print_async_exception(result)
                 traceback.print_exc()
         return results
@@ -280,9 +250,8 @@ class BybitBot(Bot):
                 reduce_only_orders = [x for x in orders if x["reduce_only"]]
                 rest = [x for x in orders if not x["reduce_only"]]
                 orders = (reduce_only_orders + rest)[:max_n_cancellations_per_batch]
-            except:
-                print("debug filter cancellations")
-                pass
+            except Exception as e:
+                logging.error("debug filter cancellations {e}")
         return await self.execute_multiple(
             orders, self.execute_cancellation, "cancellations", self.max_n_cancellations_per_batch
         )
@@ -290,7 +259,7 @@ class BybitBot(Bot):
     async def execute_cancellation(self, order: dict) -> dict:
         executed = None
         try:
-            executed = await self.cc.cancel_derivatives_order(order["order_id"], symbol=self.symbol)
+            executed = await self.cc.cancel_order(id=order["order_id"], symbol=self.symbol)
             return {
                 "symbol": executed["symbol"],
                 "side": order["side"],
@@ -312,32 +281,39 @@ class BybitBot(Bot):
         return
 
     async def fetch_ohlcvs(
-        self, symbol: str = None, start_time: int = None, interval="1m", limit=1000
+        self, symbol: str = None, start_time: int = None, interval="1m", limit=1440
     ):
         ohlcvs = None
         # m -> minutes; h -> hours; d -> days; w -> weeks; M -> months
-        interval_map = {
-            "1m": 1,
-            "3m": 3,
-            "5m": 5,
-            "15m": 15,
-            "30m": 30,
-            "1h": 60,
-            "2h": 120,
-            "4h": 240,
-            "6h": 360,
-            "12h": 720,
-            "1d": "D",
-            "1w": "W",
-            "1M": "M",
+        interval_set = {
+            "1m",
+            "3m",
+            "5m",
+            "15m",
+            "30m",
+            "1h",
+            "2h",
+            "4h",
+            "6h",
+            "8h",
+            "12h",
+            "1d",
+            "3d",
+            "1w",
+            "1M",
         }
-        assert interval in interval_map, f"unsupported timeframe {interval}"
+        # endTime is respected first
+        assert interval in interval_set, f"unsupported timeframe {interval}"
+        end_time = int(await self.get_server_time() + 1000 * 60)
+        params = {"endTime": end_time}
+        if start_time is not None:
+            params["startTime"] = int(start_time)
         try:
             ohlcvs = await self.cc.fetch_ohlcv(
-                self.symbol if symbol is None else symbol,
-                timeframe=interval_map[interval],
+                symbol=self.symbol if symbol is None else symbol,
+                timeframe=interval,
                 limit=limit,
-                params={} if start_time is None else {"startTime": int(start_time)},
+                params=params,
             )
             keys = ["timestamp", "open", "high", "low", "close", "volume"]
             return [{k: elm[i] for i, k in enumerate(keys)} for elm in ohlcvs]
@@ -353,7 +329,7 @@ class BybitBot(Bot):
         income_type: str = "Trade",
         end_time: int = None,
     ):
-        return await fetch_income(symbol=symbol, start_time=start_time, end_time=end_time)
+        return await self.fetch_income(symbol=symbol, start_time=start_time, end_time=end_time)
 
     async def transfer_from_derivatives_to_spot(self, coin: str, amount: float):
         transferred = None
@@ -397,31 +373,46 @@ class BybitBot(Bot):
                 logging.debug(
                     f"fetching income {ts_to_date_utc(fetched['result']['list'][-1]['updatedTime'])}"
                 )
+            return [
+                {
+                    "symbol": elm["symbol"],
+                    "income": elm["closedPnl"],
+                    "token": "USDT",
+                    "timestamp": elm["updatedTime"],
+                    "info": elm,
+                    "transaction_id": elm["orderId"],
+                    "trade_id": elm["orderId"],
+                }
+                for elm in sorted(incomed.values(), key=lambda x: x["updatedTime"])
+            ]
             return sorted(incomed.values(), key=lambda x: x["updatedTime"])
         except Exception as e:
             logging.error(f"error fetching income {e}")
             print_async_exception(fetched)
             traceback.print_exc()
+            return []
 
     async def fetch_latest_fills(self):
         fetched = None
         try:
-            fetched = await self.cc.fetch_my_trades(symbol=self.symbol)
+            fetched = await self.cc.swap_v2_private_get_trade_allorders(
+                params={"symbol": self.symbol_id, "limit": 1000}
+            )
             fills = [
                 {
-                    "order_id": elm["id"],
+                    "order_id": elm["orderId"],
                     "symbol": elm["symbol"],
-                    "custom_id": elm["info"]["orderLinkId"],
-                    "price": elm["price"],
-                    "qty": elm["amount"],
-                    "type": elm["type"],
+                    "custom_id": elm["clientOrderId"],
+                    "price": float(elm["avgPrice"]),
+                    "qty": float(elm["executedQty"]),
+                    "type": elm["type"].lower(),
                     "reduce_only": None,
                     "side": elm["side"].lower(),
-                    "position_side": determine_pos_side_ccxt(elm),
-                    "timestamp": elm["timestamp"],
+                    "position_side": elm["positionSide"].lower(),
+                    "timestamp": float(elm["updateTime"]),
                 }
-                for elm in fetched
-                if elm["amount"] != 0.0 and elm["type"] is not None
+                for elm in fetched["data"]["orders"]
+                if float(elm["executedQty"]) != 0.0
             ]
             return sorted(fills, key=lambda x: x["timestamp"])
         except Exception as e:
@@ -440,19 +431,31 @@ class BybitBot(Bot):
 
     async def init_exchange_config(self):
         try:
-            res = await self.cc.set_derivatives_margin_mode(
-                marginMode="cross", symbol=self.symbol, params={"leverage": self.leverage}
+            res = await self.cc.swap_v2_private_post_trade_margintype(
+                params={"symbol": self.symbol_id, "marginType": "CROSSED"}
             )
             logging.info(f"cross mode set {res}")
         except Exception as e:
             logging.error(f"error setting cross mode: {e}")
+        """
+        # no hedge mode with bingx
         try:
             res = await self.cc.set_position_mode(hedged=True)
             logging.info(f"hedge mode set {res}")
         except Exception as e:
             logging.error(f"error setting hedge mode: {e}")
+        """
         try:
-            res = await self.cc.set_leverage(int(self.leverage), symbol=self.symbol)
-            logging.info(f"leverage set {res}")
+            res = await self.cc.swap_v2_private_post_trade_leverage(
+                params={"symbol": self.symbol_id, "side": "LONG", "leverage": 7}
+            )
+            logging.info(f"leverage set long {res}")
         except Exception as e:
-            logging.error(f"error setting leverage: {e}")
+            logging.error(f"error setting leverage long: {e}")
+        try:
+            res = await self.cc.swap_v2_private_post_trade_leverage(
+                params={"symbol": self.symbol_id, "side": "SHORT", "leverage": 7}
+            )
+            logging.info(f"leverage set short {res}")
+        except Exception as e:
+            logging.error(f"error setting leverage short: {e}")
