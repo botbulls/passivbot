@@ -14,6 +14,7 @@ from pure_funcs import (
     determine_pos_side_ccxt,
     shorten_custom_id,
 )
+from njit_funcs import calc_diff
 from procedures import print_async_exception, utc_ms
 
 
@@ -44,37 +45,7 @@ class OKXBot(Passivbot):
         }
 
     async def init_bot(self):
-        # require symbols to be formatted to ccxt standard COIN/USDT:USDT
-        self.markets_dict = await self.cca.load_markets()
-        self.symbols = {}
-        for symbol_ in sorted(set(self.config["symbols"])):
-            symbol = symbol_
-            if not symbol.endswith("/USDT:USDT"):
-                coin_extracted = multi_replace(
-                    symbol_, [("/", ""), (":", ""), ("USDT", ""), ("BUSD", ""), ("USDC", "")]
-                )
-                symbol_reformatted = coin_extracted + "/USDT:USDT"
-                logging.info(
-                    f"symbol {symbol_} is wrongly formatted. Trying to reformat to {symbol_reformatted}"
-                )
-                symbol = symbol_reformatted
-            if symbol not in self.markets_dict:
-                logging.info(f"{symbol} missing from {self.exchange}")
-            else:
-                elm = self.markets_dict[symbol]
-                if elm["type"] != "swap":
-                    logging.info(f"wrong market type for {symbol}: {elm['type']}")
-                elif not elm["active"]:
-                    logging.info(f"{symbol} not active")
-                elif not elm["linear"]:
-                    logging.info(f"{symbol} is not a linear market")
-                else:
-                    self.symbols[symbol] = self.config["symbols"][symbol_]
-        self.quote = "USDT"
-        self.inverse = False
-        self.symbol_ids_inv = {
-            self.markets_dict[symbol]["id"]: symbol for symbol in self.markets_dict
-        }
+        await self.init_symbols()
         for symbol in self.symbols:
             elm = self.markets_dict[symbol]
             self.symbol_ids[symbol] = elm["id"]
@@ -365,3 +336,19 @@ class OKXBot(Passivbot):
 
     async def update_exchange_config(self):
         pass
+
+    def calc_ideal_orders(self):
+        # okx has max 100 open orders. Drop orders whose pprice diff is greatest.
+        ideal_orders = super().calc_ideal_orders()
+        ideal_orders_tmp = []
+        for s in ideal_orders:
+            for x in ideal_orders[s]:
+                ideal_orders_tmp.append({**x, **{"symbol": s}})
+        ideal_orders_tmp = sorted(
+            ideal_orders_tmp,
+            key=lambda x: calc_diff(x["price"], self.tickers[x["symbol"]]["last"]),
+        )[:100]
+        ideal_orders = {symbol: [] for symbol in self.symbols}
+        for x in ideal_orders_tmp:
+            ideal_orders[x["symbol"]].append(x)
+        return ideal_orders

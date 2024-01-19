@@ -26,7 +26,7 @@ def format_float(num):
 
 
 def compress_float(n: float, d: int) -> str:
-    if n / 10 ** d >= 1:
+    if n / 10**d >= 1:
         n = round(n)
     else:
         n = round_dynamic(n, d)
@@ -817,20 +817,14 @@ def analyze_fills_slim(fills_long: list, fills_short: list, stats: list, config:
 
     ms_diffs_long = longs.timestamp.diff()
     ms_diffs_short = shorts.timestamp.diff()
-    hrs_stuck_max_long = (
-        max(
-            ms_diffs_long.max(),
-            (sdf.iloc[-1].timestamp - longs.iloc[-1].timestamp if len(longs) > 0 else 0.0),
-        )
-        / (1000.0 * 60 * 60)
-    )
-    hrs_stuck_max_short = (
-        max(
-            ms_diffs_short.max(),
-            (sdf.iloc[-1].timestamp - shorts.iloc[-1].timestamp if len(shorts) > 0 else 0.0),
-        )
-        / (1000.0 * 60 * 60)
-    )
+    hrs_stuck_max_long = max(
+        ms_diffs_long.max(),
+        (sdf.iloc[-1].timestamp - longs.iloc[-1].timestamp if len(longs) > 0 else 0.0),
+    ) / (1000.0 * 60 * 60)
+    hrs_stuck_max_short = max(
+        ms_diffs_short.max(),
+        (sdf.iloc[-1].timestamp - shorts.iloc[-1].timestamp if len(shorts) > 0 else 0.0),
+    ) / (1000.0 * 60 * 60)
 
     profit_sum_long = longs[longs.pnl > 0.0].pnl.sum()
     loss_sum_long = longs[longs.pnl < 0.0].pnl.sum()
@@ -1638,9 +1632,9 @@ def calc_scores(config: dict, results: dict):
                     val = results[sym][key_side]
                 individual_vals[side][sym][key] = val
                 if higher_is_better:
-                    individual_scores[side][sym] += val * (10 ** i)
+                    individual_scores[side][sym] += val * (10**i)
                 else:
-                    individual_scores[side][sym] -= val * (10 ** i)
+                    individual_scores[side][sym] -= val * (10**i)
             individual_scores[side][sym] *= -1
         raws[side] = {
             key: np.mean([individual_raws[side][sym][key] for sym in results]) for key, _ in keys
@@ -1660,9 +1654,9 @@ def calc_scores(config: dict, results: dict):
         }
         for i, (key, higher_is_better) in enumerate(keys):
             if higher_is_better:
-                scores[side] += means[side][key] * (10 ** i)
+                scores[side] += means[side][key] * (10**i)
             else:
-                scores[side] -= means[side][key] * (10 ** i)
+                scores[side] -= means[side][key] * (10**i)
         scores[side] *= -1
     return {
         "scores": scores,
@@ -1907,8 +1901,9 @@ def analyze_fills_multi(sdf, fdf, params):
     )
 
     minute_mult = 60 * 24
-    drawdowns = calc_drawdowns(sdf.equity)
+    drawdowns = calc_drawdowns(pd.concat([fdf.equity, sdf.equity]).sort_index())
     drawdowns_daily = drawdowns.groupby(drawdowns.index // minute_mult * minute_mult).min()
+    drawdowns_mean = abs(drawdowns_daily.mean())
     drawdowns_ten_worst = drawdowns_daily.sort_values().iloc[:10]
     drawdown_max = drawdowns.abs().max()
     mean_of_10_worst_drawdowns = drawdowns_ten_worst.abs().mean()
@@ -1930,7 +1925,8 @@ def analyze_fills_multi(sdf, fdf, params):
         "final_balance": final_balance,
         "final_equity": final_equity,
         "drawdown_max": drawdown_max,
-        "mean_of_10_worst_drawdowns": mean_of_10_worst_drawdowns,
+        "drawdown_mean_daily_10_worst": mean_of_10_worst_drawdowns,
+        "drawdown_mean_daily": drawdowns_mean,
         "adg": adg,
         "adg_weighted": adg_weighted,
         "adg_long": adg_long,
@@ -2043,3 +2039,14 @@ def live_config_dict_to_list_recursive_grid(live_config: dict) -> list:
     return numpyize(
         [(float(live_config["long"][key]), float(live_config["short"][key])) for key in keys]
     )
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise Exception("Boolean value expected.")

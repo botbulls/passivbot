@@ -541,7 +541,7 @@ def backtest_multisymbol_recursive_grid(
                 )
                 if len(new_fills) > 0:
                     any_fill = True
-                if new_equity <= 0.0:
+                if new_equity / new_balance < 0.1:
                     bankrupt = True
                 for fill in new_fills:
                     pnl_cumsum_running += fill[2]
@@ -594,7 +594,7 @@ def backtest_multisymbol_recursive_grid(
                 )
                 if len(new_fills) > 0:
                     any_fill = True
-                if new_equity <= 0.0:
+                if new_equity / new_balance < 0.1:
                     bankrupt = True
                 for fill in new_fills:
                     pnl_cumsum_running += fill[2]
@@ -783,10 +783,13 @@ def backtest_multisymbol_recursive_grid(
                     equity,
                 )
             )
-            if equity <= 0.0 or bankrupt:
+            if equity / balance < 0.1 or bankrupt:
                 # bankrupt
+                bankrupt = True
                 break
-    if stats[-1][0] != k:
+    equity = balance + calc_pnl_sum(poss_long, poss_short, hlcs[:, k, 2], c_mults)
+    if bankrupt:
+        # force equity to be close to zero if bankrupt
         stats.append(
             (
                 stats[-1][0] + 60,
@@ -794,7 +797,18 @@ def backtest_multisymbol_recursive_grid(
                 poss_short.copy(),
                 hlcs[:, k, 2],
                 balance,
-                balance + calc_pnl_sum(poss_long, poss_short, hlcs[:, k, 2], c_mults),
+                min(starting_balance * 1e-12, equity),
+            )
+        )
+    elif stats[-1][0] != k:
+        stats.append(
+            (
+                stats[-1][0] + 60,
+                poss_long.copy(),
+                poss_short.copy(),
+                hlcs[:, k, 2],
+                balance,
+                equity,
             )
         )
     return fills, stats
@@ -815,7 +829,6 @@ def backtest_single_symbol_recursive_grid(
     min_qty,
     live_config,
 ):
-
     """
     live config tuple:
     0  auto_unstuck_delay_minutes
@@ -911,7 +924,7 @@ def backtest_single_symbol_recursive_grid(
             )
             if len(new_fills) > 0:
                 any_fill = True
-            if new_equity <= 0.0:
+            if new_equity / new_balance < 0.06:
                 bankrupt = True
             fills.extend(new_fills)
             pos_long = new_pos_long
@@ -945,7 +958,7 @@ def backtest_single_symbol_recursive_grid(
             )
             if len(new_fills) > 0:
                 any_fill = True
-            if new_equity <= 0.0:
+            if new_equity / new_balance < 0.1:
                 bankrupt = True
             fills.extend(new_fills)
             pos_short = new_pos_short
@@ -1003,7 +1016,8 @@ def backtest_single_symbol_recursive_grid(
             if equity <= 0.0 or bankrupt:
                 # bankrupt
                 break
-    if stats[-1][0] != k:
+    equity = balance + calc_pnl_sum((pos_long,), (pos_short,), hlc[k, 2], (c_mult,))
+    if bankrupt:
         stats.append(
             (
                 stats[-1][0] + 60,
@@ -1011,7 +1025,18 @@ def backtest_single_symbol_recursive_grid(
                 (pos_short,),
                 hlc[k, 2],
                 balance,
-                balance + calc_pnl_sum((pos_long,), (pos_short,), hlc[k, 2], (c_mult,)),
+                min(0.0, equity),
+            )
+        )
+    elif stats[-1][0] != k:
+        stats.append(
+            (
+                stats[-1][0] + 60,
+                (pos_long,),
+                (pos_short,),
+                hlc[k, 2],
+                balance,
+                equity,
             )
         )
     return fills, stats
