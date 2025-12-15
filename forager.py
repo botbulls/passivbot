@@ -302,17 +302,17 @@ async def get_min_costs_and_contract_multipliers(cc):
         tickers = await cc.public_mix_get_market_tickers(params={"productType": "UMCBL"})
         bitget_id_map = {elm["id"]: elm["symbol"] for elm in info}
         tickers = {
-            bitget_id_map[elm["symbol"]]: {"last": float(elm["last"])}
+            bitget_id_map[elm["symbol"]]: {"last": float(elm["last"]) if elm.get("last") is not None else None}
             for elm in tickers["data"]
-            if elm["symbol"] in bitget_id_map
+            if elm["symbol"] in bitget_id_map and elm.get("last") is not None
         }
     elif exchange == "bingx":
         tickers = await cc.swap_v2_public_get_quote_price()
         bingx_id_map = {elm["id"]: elm["symbol"] for elm in info}
         tickers = {
-            bingx_id_map[elm["symbol"]]: {"last": float(elm["price"])}
+            bingx_id_map[elm["symbol"]]: {"last": float(elm["price"]) if elm.get("price") is not None else None}
             for elm in tickers["data"]
-            if elm["symbol"] in bingx_id_map
+            if elm["symbol"] in bingx_id_map and elm.get("price") is not None
         }
     else:
         tickers = await cc.fetch_tickers()
@@ -322,29 +322,49 @@ async def get_min_costs_and_contract_multipliers(cc):
         symbol = x["symbol"]
         if symbol.endswith("USDT"):
             if x["type"] != "spot":
-                if symbol in tickers:
-                    if exchange == "bitget":
-                        min_cost = 5.0
-                        c_mult = 1.0
-                        min_qty = float(x["info"]["minTradeNum"])
-                        last_price = tickers[symbol]["last"]
-                    elif exchange == "kucoinfutures":
-                        min_qty = 1.0
-                        min_cost = 0.0
-                        c_mult = float(x["info"]["multiplier"])
-                        last_price = float(tickers[symbol]["last"])
-                    elif exchange == "bingx":
-                        min_cost = 2.0
-                        min_qty = x["contractSize"]
-                        c_mult = 1.0
-                        last_price = tickers[symbol]["last"]
-                    else:
-                        min_cost = 0.0 if x["limits"]["cost"]["min"] is None else x["limits"]["cost"]["min"]
-                        c_mult = 1.0 if x["contractSize"] is None else x["contractSize"]
-                        min_qty = 0.0 if x["limits"]["amount"]["min"] is None else x["limits"]["amount"]["min"]
-                        last_price = tickers[symbol]["last"]
-                    min_costs[symbol] = max(min_cost, min_qty * c_mult * last_price)
-                    c_mults[symbol] = c_mult
+                if symbol in tickers and isinstance(tickers[symbol], dict):
+                    try:
+                        if exchange == "bitget":
+                            min_cost = 5.0
+                            c_mult = 1.0
+                            min_qty = float(x["info"]["minTradeNum"])
+                            last_price = tickers[symbol].get("last")
+                        elif exchange == "kucoinfutures":
+                            min_qty = 1.0
+                            min_cost = 0.0
+                            c_mult = float(x["info"]["multiplier"])
+                            last_price = tickers[symbol].get("last")
+                            if last_price is not None:
+                                last_price = float(last_price)
+                        elif exchange == "bingx":
+                            min_cost = 2.0
+                            min_qty = x["contractSize"]
+                            c_mult = 1.0
+                            last_price = tickers[symbol].get("last")
+                        else:
+                            min_cost = 0.0 if x["limits"]["cost"]["min"] is None else x["limits"]["cost"]["min"]
+                            c_mult = 1.0 if x["contractSize"] is None else x["contractSize"]
+                            min_qty = 0.0 if x["limits"]["amount"]["min"] is None else x["limits"]["amount"]["min"]
+                            last_price = tickers[symbol].get("last")
+                        
+                        # Skip symbol if last_price is None or invalid
+                        if last_price is None or (isinstance(last_price, (int, float)) and (last_price <= 0 or not np.isfinite(last_price))):
+                            print(f"Warning: {symbol} has invalid last price ({last_price}), skipping")
+                            continue
+                        
+                        # Ensure last_price is float
+                        if not isinstance(last_price, (int, float)):
+                            try:
+                                last_price = float(last_price)
+                            except (ValueError, TypeError):
+                                print(f"Warning: {symbol} last price cannot be converted to float ({last_price}), skipping")
+                                continue
+                        
+                        min_costs[symbol] = max(min_cost, min_qty * c_mult * last_price)
+                        c_mults[symbol] = c_mult
+                    except (KeyError, TypeError, ValueError) as e:
+                        print(f"Warning: Error processing {symbol}: {e}, skipping")
+                        continue
     return min_costs, c_mults
 
 
