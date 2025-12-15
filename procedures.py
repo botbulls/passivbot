@@ -226,6 +226,21 @@ def make_get_filepath(filepath: str) -> str:
     return filepath
 
 
+def load_user_info(user: str, api_keys_path="api-keys.json") -> dict:
+    if api_keys_path is None:
+        api_keys_path = "api-keys.json"
+    try:
+        api_keys = json.load(open(api_keys_path))
+    except Exception as e:
+        raise Exception(f"error loading api keys file {api_keys_path} {e}")
+    if user not in api_keys:
+        raise Exception(f"user {user} not found in {api_keys_path}")
+    return {
+        k: api_keys[user][k] if k in api_keys[user] else ""
+        for k in ["exchange", "key", "secret", "passphrase"]
+    }
+
+
 def load_exchange_key_secret_passphrase(
     user: str, api_keys_path="api-keys.json"
 ) -> (str, str, str, str):
@@ -624,6 +639,29 @@ def load_ccxt_version():
     except Exception as e:
         print(f"failed to load ccxt version {e}")
         return None
+
+
+def fetch_market_specific_settings_multi(symbols=None):
+    import ccxt
+
+    ccxt_version_req = load_ccxt_version()
+    assert (
+        ccxt.__version__ == ccxt_version_req
+    ), f"Currently ccxt {ccxt.__version__} is installed. Please pip reinstall requirements.txt or install ccxt v{ccxt_version_req} manually"
+    cc = ccxt.binanceusdm()
+    info = cc.load_markets()
+    for symbol in info:
+        for felm in info[symbol]["info"]["filters"]:
+            if felm["filterType"] == "PRICE_FILTER":
+                info[symbol]["price_step"] = float(felm["tickSize"])
+            elif felm["filterType"] == "MARKET_LOT_SIZE":
+                info[symbol]["qty_step"] = float(felm["stepSize"])
+        info[symbol]["c_mult"] = info[symbol]["contractSize"]
+        info[symbol]["min_cost"] = info[symbol]["limits"]["cost"]["min"]
+        info[symbol]["min_qty"] = info[symbol]["limits"]["amount"]["min"]
+    for symbol in sorted(info):
+        info[info[symbol]["id"]] = info[symbol]
+    return info if symbols is None else {symbol: info[symbol] for symbol in symbols}
 
 
 def fetch_market_specific_settings(config: dict):
