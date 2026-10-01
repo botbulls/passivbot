@@ -33,6 +33,26 @@ See also https://github.com/msei99/pbgui/ for a web based passivbot GUI.
 - Python >= 3.8
 - [requirements.txt](requirements.txt) dependencies
 
+## Binance testnet (Demo Trading) — opt-in
+
+Binance's current test environment for USDⓈ-M Futures is **Demo Trading**
+(REST `https://demo-fapi.binance.com`, WS `wss://demo-fstream.binance.com`); the old
+futures testnet (`testnet.binancefuture.com`) is deprecated by ccxt in favour of it.
+Create API keys at https://demo.binance.com (demo keys do not work on mainnet and vice versa).
+
+Enable it per user in `api-keys.json`:
+
+```json
+"binance_demo": {"exchange": "binance", "key": "...", "secret": "...", "testnet": true}
+```
+
+or for every Binance user of the process with the env var `PASSIVBOT_BINANCE_TESTNET=1`.
+Either one enables it. With neither set, mainnet endpoints are used exactly as before.
+
+Applies to `passivbot.py` (`exchanges/binance.py`), `forager.py` and `passivbot_multi.py`.
+Optional host overrides in testnet mode: `PASSIVBOT_BINANCE_TESTNET_{FAPI,DAPI,FSTREAM,DSTREAM,SPOT_API}`.
+Wallet transfers (`/sapi/*`) are not available in Demo Trading.
+
 ## Pre-optimized configurations
 
 Pre-optimized configurations for Passivbot can be found at https://github.com/JohnKearney1/PassivBot-Configurations.  

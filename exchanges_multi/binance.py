@@ -7,7 +7,7 @@ import asyncio
 import traceback
 import numpy as np
 from pure_funcs import floatify, ts_to_date_utc, calc_hash, determine_pos_side_ccxt
-from procedures import print_async_exception, utc_ms
+from procedures import print_async_exception, utc_ms, is_binance_testnet, apply_binance_testnet_ccxt
 
 
 class BinanceBot(Passivbot):
@@ -28,6 +28,12 @@ class BinanceBot(Passivbot):
                 "headers": {"referer": self.broker_code} if self.broker_code else {},
             }
         )
+        # opt-in: Binance Demo Trading (testnet). default False -> mainnet unchanged
+        self.testnet = is_binance_testnet(self.user)
+        if self.testnet:
+            logging.info("BINANCE TESTNET (demo trading) enabled")
+            apply_binance_testnet_ccxt(self.ccp)
+            apply_binance_testnet_ccxt(self.cca)
         self.max_n_cancellations_per_batch = 10
         self.max_n_creations_per_batch = 5
 
