@@ -263,6 +263,102 @@ def load_exchange_key_secret_passphrase(
         raise Exception("API KeyFile Missing!")
 
 
+BINANCE_MAINNET_HOSTS = {
+    "fapi": "https://fapi.binance.com",
+    "dapi": "https://dapi.binance.com",
+    "fstream": "wss://fstream.binance.com",
+    "dstream": "wss://dstream.binance.com",
+    "spot_api": "https://api.binance.com",
+}
+
+# Binance "Demo Trading" (formerly futures testnet). Opt-in only.
+# https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info
+BINANCE_TESTNET_HOSTS = {
+    "fapi": "https://demo-fapi.binance.com",
+    "dapi": "https://demo-dapi.binance.com",
+    "fstream": "wss://demo-fstream.binance.com",
+    "dstream": "wss://demo-dstream.binance.com",
+    "spot_api": "https://demo-api.binance.com",
+}
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def is_binance_testnet(user: str = None, api_keys_path="api-keys.json") -> bool:
+    """
+    Opt-in switch for Binance test environment (Demo Trading).
+    Enabled if env PASSIVBOT_BINANCE_TESTNET is truthy, or if the user's entry
+    in api-keys.json has "testnet": true. Default (neither set) -> False (mainnet).
+    """
+    if _truthy(os.environ.get("PASSIVBOT_BINANCE_TESTNET", "")):
+        return True
+    if user is None:
+        return False
+    if api_keys_path is None:
+        api_keys_path = "api-keys.json"
+    try:
+        keyfile = json.load(open(api_keys_path))
+    except Exception:
+        return False
+    return _truthy(keyfile.get(user, {}).get("testnet", False))
+
+
+def get_binance_hosts(testnet: bool = False) -> dict:
+    """
+    Returns base hosts for Binance futures. Each host can be overridden in testnet
+    mode with env PASSIVBOT_BINANCE_TESTNET_<FAPI|DAPI|FSTREAM|DSTREAM|SPOT_API>.
+    """
+    if not testnet:
+        return dict(BINANCE_MAINNET_HOSTS)
+    hosts = dict(BINANCE_TESTNET_HOSTS)
+    for k in hosts:
+        override = os.environ.get(f"PASSIVBOT_BINANCE_TESTNET_{k.upper()}", "").strip()
+        if override:
+            hosts[k] = override.rstrip("/")
+    return hosts
+
+
+def apply_binance_testnet_ccxt(cc, testnet: bool = True):
+    """
+    Rewrites a ccxt binance/binanceusdm instance (async_support or pro) so that every
+    REST and WS url pointing to Binance mainnet hosts points to the test hosts instead.
+    Patches urls directly: works with ccxt 4.1.72 (no enable_demo_trading) and newer.
+    No-op if testnet is False.
+    """
+    if not testnet:
+        return cc
+    mainnet = BINANCE_MAINNET_HOSTS
+    test = get_binance_hosts(True)
+    host_map = {mainnet[k]: test[k] for k in mainnet}
+    # spot websocket host used by ccxt pro (not used for USDT-M, mapped for safety)
+    host_map["wss://stream.binance.com:9443"] = "wss://demo-stream.binance.com"
+    host_map["wss://stream.binance.com"] = "wss://demo-stream.binance.com"
+    host_map["wss://ws-api.binance.com:443"] = "wss://demo-ws-api.binance.com"
+    host_map["wss://ws-api.binance.com"] = "wss://demo-ws-api.binance.com"
+
+    def rewrite(url: str) -> str:
+        for src, dst in host_map.items():
+            if url == src or url.startswith(src + "/"):
+                return dst + url[len(src) :]
+        return url
+
+    def walk(node):
+        if isinstance(node, dict):
+            return {k: walk(v) for k, v in node.items()}
+        if isinstance(node, str):
+            return rewrite(node)
+        return node
+
+    cc.urls["api"] = walk(cc.urls["api"])
+    # demo env does not support sapi endpoints; avoid private sapi call in load_markets
+    cc.options["fetchCurrencies"] = False
+    return cc
+
+
 def load_broker_code(exchange: str) -> str:
     try:
         return hjson.load(open("broker_codes.hjson"))[exchange]
