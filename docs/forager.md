@@ -86,6 +86,12 @@ only handles the other side keeps `-lm m` / `-sm m` as before.
 
 The CLI flags `-gs`, `-gsl` and `-gss` still work and are combined with these keys.
 
+**Upgrading:** older forager versions ignored these keys. Any value already present in a config
+takes effect as soon as this version starts: `panic`, `manual`, `tp_only` or `graceful_stop`
+are applied to every pane of that side, and an unknown value stops forager at startup. Before
+deploying, check every forager config with `grep -E 'long_mode|short_mode'` and make sure each
+key is absent, `null`, `""` or `normal`, unless the other value is intended.
+
 Example:
 ```hjson
 long_mode: graceful_stop

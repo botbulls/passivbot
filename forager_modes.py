@@ -13,6 +13,8 @@ from typing import Optional, Tuple
 
 # alias aceptado -> codigo corto de passivbot.py (-lm / -sm)
 # Coinciden con los aliases que acepta passivbot.py.
+# El dashboard (botbulls/dashboard, bot_control.MODE_ALIASES) tiene una copia fijada por test:
+# si cambias esta tabla, cambiala tambien alla.
 MODE_ALIASES = {
     "n": "n",
     "normal": "n",
