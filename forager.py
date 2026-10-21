@@ -24,9 +24,12 @@ from procedures import (
     utc_ms,
     make_get_filepath,
     get_first_ohlcv_timestamps,
+    is_binance_testnet,
+    apply_binance_testnet_ccxt,
 )
 from njit_funcs import calc_emas
 from pure_funcs import determine_pos_side_ccxt, date_to_ts2
+from forager_modes import resolve_config_modes, stops_new_symbols, pane_modes
 
 
 def score_func_old(ohlcv):
@@ -188,8 +191,14 @@ def generate_yaml(
     sleep_duration = -config["sleep_interval"]
     for sym, long_enabled, short_enabled in active_bots + bots_on_gs:
         sleep_duration += config["sleep_interval"]
-        lm = "n" if long_enabled and lw > 0.0 else "gs"
-        sm = "n" if short_enabled and sw > 0.0 else "gs"
+        lm, sm = pane_modes(
+            long_enabled,
+            short_enabled,
+            lw,
+            sw,
+            config.get("long_mode_code"),
+            config.get("short_mode_code"),
+        )
         if sym in config["live_configs_map_long"]:
             conf_path_long = config["live_configs_map_long"][sym]
         elif sym in config["live_configs_map"]:
@@ -572,8 +581,20 @@ async def main():
     config = hjson.load(open(args.forager_config_path))
     config["yaml_filepath"] = f"{config['user']}.yaml"
     config["graceful_stop"] = args.graceful_stop
-    config["graceful_stop_long"] = args.graceful_stop_long
-    config["graceful_stop_short"] = args.graceful_stop_short
+    # long_mode/short_mode opcionales en la config (ver forager_modes.py y docs/forager.md).
+    # Valor invalido => error al arrancar. Ausentes => comportamiento identico al anterior.
+    try:
+        long_mode_code, short_mode_code = resolve_config_modes(config)
+    except ValueError as e:
+        raise SystemExit(f"error: {e}")
+    config["long_mode_code"] = long_mode_code
+    config["short_mode_code"] = short_mode_code
+    config["graceful_stop_long"] = args.graceful_stop_long or stops_new_symbols(long_mode_code)
+    config["graceful_stop_short"] = args.graceful_stop_short or stops_new_symbols(short_mode_code)
+    print(
+        f"config modes: long_mode={config.get('long_mode')!r} -> {long_mode_code}, "
+        f"short_mode={config.get('short_mode')!r} -> {short_mode_code}"
+    )
     user = config["user"]
     for key, value in [
         ("volume_clip_threshold", 0.5),
@@ -608,6 +629,9 @@ async def main():
             else:
                 config[f"approved_symbols_{side}"] = []
     exchange, key, secret, passphrase = load_exchange_key_secret_passphrase(config["user"])
+    binance_testnet = exchange == "binance" and is_binance_testnet(config["user"])
+    if binance_testnet:
+        print("BINANCE TESTNET (demo trading) enabled for forager")
     max_n_tries_per_hour = 5
     error_timestamps = []
     while True:
@@ -615,6 +639,8 @@ async def main():
             cc = getattr(ccxt, exchange_map[exchange])(
                 {"apiKey": key, "secret": secret, "password": passphrase}
             )
+            if binance_testnet:
+                apply_binance_testnet_ccxt(cc)
             await dump_yaml(cc, config)
             print("waiting one minute to avoid API rate limiting...")
             for i in range(60, -1, -1):
