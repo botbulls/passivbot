@@ -641,6 +641,16 @@ def test_guard_respeta_manual(guard_bot):
     assert bot.calls["create"] == []
 
 
+def test_guard_respeta_tp_only(guard_bot):
+    # en tp_only el flujo normal nunca cancela entradas de ese lado: el guard tampoco
+    bot = guard_bot(psize_long=0.01, pprice_long=30500.0)
+    bot.long_mode = "tp_only"
+    asyncio.run(bot.cancel_and_create())
+    assert bot.calls["calc_orders"] == 0
+    assert ids(bot.calls["cancel"]) == [3]  # solo la entrada short
+    assert bot.calls["create"] == []
+
+
 def test_guard_panic_crea_el_cierre_de_panico(guard_bot, make_bot, monkeypatch):
     bot = guard_bot(psize_long=0.01, pprice_long=30500.0)
     bot.long_mode = "panic"

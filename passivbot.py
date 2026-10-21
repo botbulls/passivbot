@@ -81,7 +81,8 @@ class Bot:
         self.hedge_mode = self.config["hedge_mode"] = True
         self.rescate_loan = LoanState.from_env()
         self.rescate_guard_log_ts = 0.0  # > 0 mientras el bot está sin capital propio
-        self.rescate_guard_log_interval = 60.0
+        # < 60 s para que en ohlcv (un ciclo por minuto, con jitter) salga en cada ciclo
+        self.rescate_guard_log_interval = 50.0
         if self.rescate_loan is not None:
             logging.info(f"rescate: activo, préstamo leído de {self.rescate_loan.path}")
         self.set_config(self.config)
@@ -438,7 +439,8 @@ class Bot:
 
         Se cancelan las entradas abiertas (long/buy, short/sell) y se conservan los cierres
         que ya están en el exchange. Un lado en manual no se toca; un lado en panic arma su
-        cierre de pánico como siempre.
+        cierre de pánico como siempre. En tp_only tampoco se toca nada, igual que en el flujo
+        normal, que en ese modo no cancela entradas.
         """
         now = time.time()
         if now - self.rescate_guard_log_ts >= self.rescate_guard_log_interval:
@@ -451,7 +453,9 @@ class Bot:
         to_cancel, to_create = [], []
         for pside, entry_side in (("long", "buy"), ("short", "sell")):
             pside_mode = getattr(self, f"{pside}_mode")
-            if pside_mode == "manual":
+            if pside_mode in ("manual", "tp_only"):
+                # manual no toca nada; tp_only nunca cancela entradas (no son del bot) y los
+                # cierres ya se conservan: ese lado queda sin cambios
                 continue
             open_pside = [o for o in self.open_orders if o["position_side"] == pside]
             if pside_mode == "panic":
