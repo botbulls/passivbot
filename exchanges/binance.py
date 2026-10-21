@@ -10,7 +10,7 @@ import aiohttp
 import numpy as np
 
 from passivbot import Bot, logging
-from procedures import print_, print_async_exception
+from procedures import print_, print_async_exception, is_binance_testnet, get_binance_hosts
 from pure_funcs import ts_to_date, sort_dict_keys, format_float
 
 
@@ -20,6 +20,11 @@ class BinanceBot(Bot):
         self.max_n_orders_per_batch = 5
         self.max_n_cancellations_per_batch = 10
         super().__init__(config)
+        # opt-in: Binance Demo Trading (testnet). default False -> mainnet unchanged
+        self.testnet = is_binance_testnet(self.user, self.api_keys)
+        self.hosts = get_binance_hosts(self.testnet)
+        if self.testnet:
+            logging.info(f"BINANCE TESTNET (demo trading) enabled: {self.hosts}")
         self.session = aiohttp.ClientSession()
         self.base_endpoint = ""
         self.headers = {"X-MBX-APIKEY": self.key}
@@ -120,8 +125,8 @@ class BinanceBot(Bot):
         )
 
     async def init_market_type(self):
-        fapi_endpoint = "https://fapi.binance.com"
-        dapi_endpoint = "https://dapi.binance.com"
+        fapi_endpoint = self.hosts["fapi"]
+        dapi_endpoint = self.hosts["dapi"]
         self.exchange_info = None
         try:
             self.exchange_info = await self.public_get(
@@ -150,7 +155,7 @@ class BinanceBot(Bot):
                     "margin_type": "/fapi/v1/marginType",
                     "leverage": "/fapi/v1/leverage",
                     "position_side": "/fapi/v1/positionSide/dual",
-                    "websocket": (ws := f"wss://fstream.binance.com/ws/"),
+                    "websocket": (ws := f"{self.hosts['fstream']}/ws/"),
                     "websocket_market": ws + f"{self.symbol.lower()}@aggTrade",
                     "websocket_user": ws,
                     "listen_key": "/fapi/v1/listenKey",
@@ -183,7 +188,7 @@ class BinanceBot(Bot):
                         "margin_type": "/dapi/v1/marginType",
                         "leverage": "/dapi/v1/leverage",
                         "position_side": "/dapi/v1/positionSide/dual",
-                        "websocket": (ws := f"wss://dstream.binance.com/ws/"),
+                        "websocket": (ws := f"{self.hosts['dstream']}/ws/"),
                         "websocket_market": ws + f"{self.symbol.lower()}@aggTrade",
                         "websocket_user": ws,
                         "listen_key": "/dapi/v1/listenKey",
@@ -197,7 +202,7 @@ class BinanceBot(Bot):
             traceback.print_exc()
             raise Exception("stopping bot")
 
-        self.spot_base_endpoint = "https://api.binance.com"
+        self.spot_base_endpoint = self.hosts["spot_api"]
         self.endpoints["transfer"] = "/sapi/v1/asset/transfer"
         self.endpoints["futures_transfer"] = "/sapi/v1/futures/transfer"
         self.endpoints["account"] = "/api/v3/account"

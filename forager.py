@@ -24,6 +24,8 @@ from procedures import (
     utc_ms,
     make_get_filepath,
     get_first_ohlcv_timestamps,
+    is_binance_testnet,
+    apply_binance_testnet_ccxt,
 )
 from njit_funcs import calc_emas
 from pure_funcs import determine_pos_side_ccxt, date_to_ts2
@@ -608,6 +610,9 @@ async def main():
             else:
                 config[f"approved_symbols_{side}"] = []
     exchange, key, secret, passphrase = load_exchange_key_secret_passphrase(config["user"])
+    binance_testnet = exchange == "binance" and is_binance_testnet(config["user"])
+    if binance_testnet:
+        print("BINANCE TESTNET (demo trading) enabled for forager")
     max_n_tries_per_hour = 5
     error_timestamps = []
     while True:
@@ -615,6 +620,8 @@ async def main():
             cc = getattr(ccxt, exchange_map[exchange])(
                 {"apiKey": key, "secret": secret, "password": passphrase}
             )
+            if binance_testnet:
+                apply_binance_testnet_ccxt(cc)
             await dump_yaml(cc, config)
             print("waiting one minute to avoid API rate limiting...")
             for i in range(60, -1, -1):
