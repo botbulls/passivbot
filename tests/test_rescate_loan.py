@@ -135,8 +135,9 @@ def test_invalido_despues_de_valido_conserva_el_ultimo(tmp_path, caplog):
     assert loan.balance_para_dimensionar(1000.0) == 700.0
     assert loan.balance_para_dimensionar(1000.0) == 700.0
     errors = rescate_records(caplog, logging.ERROR)
-    assert len(errors) == 1  # no spamea mientras siga igual de roto
-    assert "se conserva el último préstamo válido (300.0)" in errors[0].getMessage()
+    assert len(errors) == 2  # un ERROR por lectura mientras siga inválido
+    for e in errors:
+        assert "se conserva el último préstamo válido (300.0)" in e.getMessage()
     write_state(path, 200.0)
     assert loan.balance_para_dimensionar(1000.0) == 800.0
     assert any("válido de nuevo" in r.getMessage() for r in rescate_records(caplog, logging.INFO))
@@ -151,6 +152,55 @@ def test_invalido_sin_valido_previo_usa_cero(tmp_path, caplog):
     errors = rescate_records(caplog, logging.ERROR)
     assert len(errors) == 1
     assert "nunca hubo un estado válido, se usa préstamo 0" in errors[0].getMessage()
+
+
+def test_invalido_loguea_error_en_cada_lectura(tmp_path, caplog):
+    # forager relanza los panes cada hora: un solo ERROR por proceso se pierde y el préstamo 0
+    # (o el último válido) queda aplicado sin ruido. Mientras el archivo siga inválido, cada
+    # lectura tiene que dejar un ERROR.
+    caplog.set_level(logging.INFO)
+    path = tmp_path / "loan_state.json"
+    path.write_text(
+        '{"version": 1, "loan_outstanding_usdt": "300.00", "updated_at": "x", "mode": "real"}'
+    )
+    loan = LoanState(str(path))
+    for _ in range(3):
+        assert loan.balance_para_dimensionar(1000.0) == 1000.0
+    errors = rescate_records(caplog, logging.ERROR)
+    assert len(errors) == 3
+    assert all("loan_outstanding_usdt no es numérico" in e.getMessage() for e in errors)
+    write_state(path, 300.0, mode="real")
+    assert loan.balance_para_dimensionar(1000.0) == 700.0
+    assert len(rescate_records(caplog, logging.ERROR)) == 3
+
+
+def test_dry_run_resta_igual_que_real_contrato_v1(tmp_path):
+    # El contrato v1 no distingue por mode: dry_run también se resta. Si se decide cambiarlo,
+    # tiene que cambiar a la vez en el servicio rescate y acá; este test lo deja explícito.
+    path = tmp_path / "loan_state.json"
+    for mode in ("real", "dry_run"):
+        write_state(path, 300.0, mode=mode)
+        assert LoanState(str(path)).balance_para_dimensionar(1000.0) == 700.0
+
+
+def test_sin_capital_propio_solo_con_prestamo(tmp_path):
+    path = tmp_path / "loan_state.json"
+    loan = LoanState(str(path))
+    assert loan.balance_para_dimensionar(0.0) == 0.0  # archivo ausente: préstamo 0
+    assert loan.sin_capital_propio is False
+    write_state(path, 1000.0)
+    assert loan.balance_para_dimensionar(1000.0) == 0.0
+    assert loan.sin_capital_propio is True
+    assert loan.balance_para_dimensionar(1500.0) == 500.0
+    assert loan.sin_capital_propio is False
+    write_state(path, 0.0)
+    loan.balance_para_dimensionar(1000.0)
+    write_state(path, 2000.0)
+    loan.balance_para_dimensionar(1000.0)
+    assert loan.sin_capital_propio is True
+    write_state(path, 0.0)
+    assert loan.balance_para_dimensionar(0.0) == 0.0
+    assert loan.sin_capital_propio is False
 
 
 def test_ilegible_conserva_el_ultimo(tmp_path):
@@ -217,6 +267,13 @@ def pb():
     return passivbot
 
 
+CONFIGS_POR_MODO = {
+    "clock": "configs/live/clock_mode.example.json",
+    "neat_grid": "configs/live/neat_grid_mode.example.json",
+    "recursive_grid": "configs/live/recursive_grid_mode.example.json",
+}
+
+
 @pytest.fixture
 def make_bot(pb, monkeypatch):
     from procedures import load_live_config
@@ -225,8 +282,8 @@ def make_bot(pb, monkeypatch):
     monkeypatch.setattr(pb, "make_get_filepath", lambda p: p)
     monkeypatch.setattr(pb, "load_broker_code", lambda *a, **k: "")
 
-    def _make(assigned_balance=None, cross_wallet_pct=1.0):
-        cfg = load_live_config(os.path.join(ROOT, "configs/live/clock_mode.example.json"))
+    def _make(assigned_balance=None, cross_wallet_pct=1.0, mode="clock"):
+        cfg = load_live_config(os.path.join(ROOT, CONFIGS_POR_MODO[mode]))
         cfg.update(
             user="u",
             exchange="binance",
@@ -413,10 +470,226 @@ def test_funciones_de_ordenes_reciben_el_balance_propio(pb, make_bot, monkeypatc
 @pytest.mark.xfail(
     strict=True,
     raises=ZeroDivisionError,
-    reason="limitación conocida de v6.1: con balance 0 calc_orders divide por cero (NOJIT); "
-    "con préstamo >= wallet el bot no recalcula órdenes. Bloqueante para mode real.",
+    reason="limitación de v6.1: calc_orders llamado directo con balance 0 divide por cero (NOJIT). "
+    "Con rescate el bot no llega acá: cancel_and_create corta antes (ver tests del guard).",
 )
 def test_calc_orders_con_balance_cero(make_bot):
     bot = make_bot()
     bot.position = position(0.0, psize_long=0.01, pprice_long=30500.0)
     bot.calc_orders()
+
+
+# ---------------------------------------------------------------- guard sin capital propio
+
+
+def oo(order_id, side, pside, qty=0.001, price=30000.0):
+    return {
+        "order_id": order_id,
+        "symbol": "BTCUSDT",
+        "price": price,
+        "qty": qty,
+        "type": "limit",
+        "side": side,
+        "position_side": pside,
+        "timestamp": 0,
+    }
+
+
+OPEN_ORDERS = [
+    oo(1, "buy", "long", price=29900.0),  # entrada long
+    oo(2, "sell", "long", price=30600.0),  # cierre long
+    oo(3, "sell", "short", price=30100.0),  # entrada short
+    oo(4, "buy", "short", price=29400.0),  # cierre short
+]
+
+POSICIONES = {
+    "sin_pos": {},
+    "long": {"psize_long": 0.01, "pprice_long": 30500.0},
+    "short": {"psize_short": -0.01, "pprice_short": 29500.0},
+}
+
+
+def position_full(wallet, psize_long=0.0, pprice_long=0.0, psize_short=0.0, pprice_short=0.0):
+    pos = position(wallet, psize_long, pprice_long)
+    pos["short"].update(size=psize_short, price=pprice_short)
+    return pos
+
+
+@pytest.fixture
+def guard_bot(make_bot, monkeypatch, tmp_path):
+    """Bot con rescate activo, exchange stubeado y registro de cancelaciones y creaciones."""
+
+    def _make(mode="clock", wallet=1000.0, loan=1500.0, open_orders=OPEN_ORDERS, ohlcv=True, **pos):
+        path = tmp_path / "loan_state.json"
+        if loan is not None:
+            write_state(path, loan, mode="real")
+        monkeypatch.setenv(ENV_VAR, str(path))
+        bot = make_bot(mode=mode)
+        bot.ohlcv = ohlcv
+        bot.delay_between_executions = 0
+        bot.max_n_orders_per_batch = 5
+        bot.max_n_cancellations_per_batch = 10
+        bot.open_orders = [dict(o) for o in open_orders]
+        bot.loan_path = path
+        bot.wallet = wallet
+        bot.pos_kwargs = pos
+
+        async def fetch_position():
+            return position_full(bot.wallet, **bot.pos_kwargs)
+
+        bot.fetch_position = fetch_position
+        bot.calls = {"calc_orders": 0, "cancel": [], "create": []}
+        real_calc_orders = bot.calc_orders
+
+        def calc_orders_spy():
+            bot.calls["calc_orders"] += 1
+            return real_calc_orders()
+
+        bot.calc_orders = calc_orders_spy
+
+        async def cancel_orders(orders):
+            bot.calls["cancel"].extend(orders)
+            return orders
+
+        async def create_orders(orders):
+            bot.calls["create"].extend(orders)
+            return orders
+
+        bot.cancel_orders = cancel_orders
+        bot.create_orders = create_orders
+        assert asyncio.run(bot.update_position()) is True
+        return bot
+
+    return _make
+
+
+def ids(orders):
+    return sorted(o["order_id"] for o in orders)
+
+
+@pytest.mark.parametrize("pos_name", list(POSICIONES))
+@pytest.mark.parametrize("mode", list(CONFIGS_POR_MODO))
+def test_guard_sin_capital_cancela_entradas_y_conserva_cierres(guard_bot, caplog, mode, pos_name):
+    caplog.set_level(logging.INFO)
+    bot = guard_bot(mode=mode, **POSICIONES[pos_name])
+    assert bot.passivbot_mode == mode
+    assert bot.position["wallet_balance"] == 0.0
+    asyncio.run(bot.cancel_and_create())  # sin el guard: ZeroDivisionError o entradas a min_qty
+    assert bot.calls["calc_orders"] == 0
+    assert ids(bot.calls["cancel"]) == [1, 3]  # solo las entradas
+    assert bot.calls["create"] == []
+    criticals = rescate_records(caplog, logging.CRITICAL)
+    assert len(criticals) == 1
+    assert "sin capital propio" in criticals[0].getMessage()
+
+
+def test_guard_critical_cada_intervalo(guard_bot, caplog):
+    caplog.set_level(logging.INFO)
+    bot = guard_bot()
+    for _ in range(3):
+        asyncio.run(bot.cancel_and_create())
+    assert len(rescate_records(caplog, logging.CRITICAL)) == 1  # no spamea en cada tick
+    bot.rescate_guard_log_interval = 0.0
+    for _ in range(2):
+        asyncio.run(bot.cancel_and_create())
+    assert len(rescate_records(caplog, logging.CRITICAL)) == 3
+
+
+def test_guard_se_libera_cuando_baja_el_prestamo(guard_bot, caplog):
+    caplog.set_level(logging.INFO)
+    bot = guard_bot(psize_long=0.01, pprice_long=30500.0)
+    asyncio.run(bot.cancel_and_create())
+    assert bot.calls["calc_orders"] == 0
+    write_state(bot.loan_path, 300.0, mode="real")  # devolución parcial
+    assert asyncio.run(bot.update_position()) is True
+    assert bot.position["wallet_balance"] == 700.0
+    bot.open_orders = []
+    asyncio.run(bot.cancel_and_create())
+    assert bot.calls["calc_orders"] == 1
+    assert any(o["side"] == "buy" and o["position_side"] == "long" for o in bot.calls["create"])
+    msgs = [r.getMessage() for r in rescate_records(caplog, logging.INFO)]
+    assert "rescate: hay capital propio de nuevo, se vuelven a calcular las órdenes" in msgs
+
+
+@pytest.mark.parametrize(
+    "env, assigned_balance, loan",
+    [
+        ("sin_env", None, None),
+        ("archivo_ausente", None, None),
+        ("prestamo_cero", None, 0.0),
+        ("assigned_balance", 500.0, 1500.0),
+    ],
+)
+def test_guard_no_se_activa_sin_prestamo_vigente(make_bot, monkeypatch, tmp_path, env, assigned_balance, loan):
+    path = tmp_path / "loan_state.json"
+    if env == "sin_env":
+        monkeypatch.delenv(ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(ENV_VAR, str(path))
+    if loan is not None:
+        write_state(path, loan, mode="real")
+    bot = make_bot(assigned_balance=assigned_balance)
+    bot.adjust_wallet_balance(0.0 if assigned_balance is None else 1000.0)
+    assert bot.rescate_sin_capital_propio() is False
+
+
+def test_guard_respeta_manual(guard_bot):
+    bot = guard_bot(psize_long=0.01, pprice_long=30500.0)
+    bot.long_mode = "manual"
+    asyncio.run(bot.cancel_and_create())
+    assert ids(bot.calls["cancel"]) == [3]  # el lado long no se toca
+    assert bot.calls["create"] == []
+
+
+def test_guard_panic_crea_el_cierre_de_panico(guard_bot, make_bot, monkeypatch):
+    bot = guard_bot(psize_long=0.01, pprice_long=30500.0)
+    bot.long_mode = "panic"
+    asyncio.run(bot.cancel_and_create())
+    assert bot.calls["calc_orders"] == 0
+    # panic cancela todo lo del lado long que no sea el cierre de pánico; short: solo la entrada
+    assert ids(bot.calls["cancel"]) == [1, 2, 3]
+    assert bot.calls["create"] == [
+        {
+            "side": "sell",
+            "position_side": "long",
+            "qty": 0.01,
+            "price": 30001.0,
+            "type": "limit",
+            "reduce_only": True,
+            "custom_id": "long_panic_close",
+        }
+    ]
+    # el cierre del guard es el mismo que arma calc_orders con capital propio
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    ref = make_bot()
+    ref.long_mode = "panic"
+    ref.position = position_full(1000.0, psize_long=0.01, pprice_long=30500.0)
+    assert [o for o in ref.calc_orders() if o["custom_id"] == "long_panic_close"] == bot.calls["create"]
+    ref.short_mode = "panic"
+    ref.long_mode = None
+    ref.position = position_full(1000.0, psize_short=-0.01, pprice_short=29500.0)
+    bot.position = ref.position
+    assert [o for o in ref.calc_orders() if o["custom_id"] == "short_panic_close"] == (
+        bot.rescate_panic_closes("short")
+    )
+
+
+def test_guard_recheck_despues_del_update_rest_de_ientry(guard_bot):
+    # modo websocket (no ohlcv): ante una ientry cerca del precio, cancel_and_create relee la
+    # posición por REST y vuelve a llamar a calc_orders. Si en esa relectura el préstamo pasó a
+    # cubrir todo el wallet, no tiene que calcular órdenes con balance 0.
+    bot = guard_bot(mode="neat_grid", loan=0.0, ohlcv=False, open_orders=[])
+    bot.price = bot.ob[0] = 30101.0
+    bot.ob[1] = 30102.0
+    near = [
+        o
+        for o in bot.calc_orders()
+        if "ientry" in o["custom_id"] and abs(o["price"] - bot.price) / bot.price < 0.002
+    ]
+    assert near, "precondición: tiene que haber una ientry a menos de 0.2% del precio"
+    bot.calls["calc_orders"] = 0
+    write_state(bot.loan_path, 1500.0, mode="real")  # se inyecta mientras tanto
+    asyncio.run(bot.cancel_and_create())
+    assert bot.calls["calc_orders"] == 1  # solo la primera, antes de releer
+    assert bot.position["wallet_balance"] == 0.0
+    assert bot.calls["create"] == []

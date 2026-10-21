@@ -15,7 +15,10 @@ Reglas:
   balance queda idéntico al de hoy.
 * Archivo ausente => préstamo 0.
 * Archivo inválido o ilegible => se conserva el último valor válido leído (o 0 si nunca
-  hubo uno) y se loguea el error.
+  hubo uno) y se loguea el error en cada lectura mientras siga inválido.
+
+``sin_capital_propio`` queda en True cuando hay préstamo > 0 y el balance para dimensionar
+da 0: passivbot lo usa para no calcular órdenes con balance 0 (ver Bot.cancel_and_create).
 
 Este módulo no depende de nada del bot para poder testearse aislado.
 """
@@ -74,6 +77,7 @@ class LoanState:
     def __init__(self, path: str):
         self.path = path
         self.last_valid = None  # dict del último estado válido (o None si nunca hubo uno)
+        self.sin_capital_propio = False  # préstamo > 0 y balance para dimensionar 0
         self._last_error = None
         self._last_logged = None
 
@@ -113,9 +117,10 @@ class LoanState:
         else:
             state = {"loan_outstanding_usdt": 0.0, "mode": None, "updated_at": None}
             detail = "nunca hubo un estado válido, se usa préstamo 0"
-        if error != self._last_error:
-            logging.error(f"rescate: {error}; {detail}")
-            self._last_error = error
+        # se loguea en cada lectura mientras siga inválido: un solo log por proceso se pierde
+        # entre los reinicios de forager y el error queda silencioso.
+        logging.error(f"rescate: {error}; {detail}")
+        self._last_error = error
         return state
 
     def _clear_error(self):
@@ -129,8 +134,10 @@ class LoanState:
         loan = state["loan_outstanding_usdt"]
         if loan <= 0.0:
             self._last_logged = None
+            self.sin_capital_propio = False
             return wallet_balance
         sized = max(0.0, wallet_balance - loan)
+        self.sin_capital_propio = sized <= 0.0
         key = (sized, wallet_balance, loan, state["mode"])
         if key != self._last_logged:
             logging.info(
