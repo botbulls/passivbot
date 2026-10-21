@@ -59,6 +59,7 @@ from njit_clock import (
     calc_clock_close_long,
     calc_clock_close_short,
 )
+from rescate_loan import LoanState
 from typing import Union, Dict, List
 
 import websockets
@@ -78,6 +79,12 @@ class Bot:
         self.ws_market = None
 
         self.hedge_mode = self.config["hedge_mode"] = True
+        self.rescate_loan = LoanState.from_env()
+        self.rescate_guard_log_ts = 0.0  # > 0 mientras el bot está sin capital propio
+        # < 60 s para que en ohlcv (un ciclo por minuto, con jitter) salga en cada ciclo
+        self.rescate_guard_log_interval = 50.0
+        if self.rescate_loan is not None:
+            logging.info(f"rescate: activo, préstamo leído de {self.rescate_loan.path}")
         self.set_config(self.config)
         self.server_time = utc_ms()
 
@@ -385,9 +392,84 @@ class Bot:
             return False
 
     def adjust_wallet_balance(self, balance: float) -> float:
+        # rescate (colchón): dimensionar sobre capital propio = wallet - préstamo vigente.
+        # Solo aplica al balance que viene del exchange; assigned_balance no incluye el préstamo.
+        if self.rescate_loan is not None and self.assigned_balance is None:
+            balance = self.rescate_loan.balance_para_dimensionar(balance)
         return (
             balance if self.assigned_balance is None else self.assigned_balance
         ) * self.cross_wallet_pct
+
+    def rescate_sin_capital_propio(self) -> bool:
+        """True si hay préstamo vigente y el balance para dimensionar quedó en 0.
+
+        En ese caso calc_orders dividiría por 0 (ZeroDivisionError en NOJIT) o, en neat y
+        recursive sin posición, crearía entradas a min_qty sin capital propio.
+        Sin la env, con préstamo 0 o con assigned_balance, siempre da False.
+        """
+        activo = (
+            self.rescate_loan is not None
+            and self.assigned_balance is None
+            and self.rescate_loan.sin_capital_propio
+        )
+        if not activo and self.rescate_guard_log_ts:
+            logging.info("rescate: hay capital propio de nuevo, se vuelven a calcular las órdenes")
+            self.rescate_guard_log_ts = 0.0
+        return activo
+
+    def rescate_panic_closes(self, pside: str) -> [dict]:
+        # mismo cierre que arma calc_orders en modo panic; no depende del balance
+        psize = self.position[pside]["size"]
+        if psize == 0.0:
+            return []
+        return [
+            {
+                "side": "sell" if pside == "long" else "buy",
+                "position_side": pside,
+                "qty": abs(psize),
+                "price": float(self.ob[1] if pside == "long" else self.ob[0]),
+                "type": "limit",
+                "reduce_only": True,
+                "custom_id": f"{pside}_panic_close",
+            }
+        ]
+
+    async def rescate_cancel_and_create_sin_capital(self):
+        """Sin capital propio no se calculan órdenes nuevas.
+
+        Se cancelan las entradas abiertas (long/buy, short/sell) y se conservan los cierres
+        que ya están en el exchange. Un lado en manual no se toca; un lado en panic arma su
+        cierre de pánico como siempre. En tp_only tampoco se toca nada, igual que en el flujo
+        normal, que en ese modo no cancela entradas.
+        """
+        now = time.time()
+        if now - self.rescate_guard_log_ts >= self.rescate_guard_log_interval:
+            logging.critical(
+                "rescate: sin capital propio (préstamo >= wallet); no se calculan órdenes, "
+                + "se cancelan las entradas abiertas y se conservan los cierres"
+            )
+            self.rescate_guard_log_ts = now
+        keys = ["side", "position_side", "qty", "price"]
+        to_cancel, to_create = [], []
+        for pside, entry_side in (("long", "buy"), ("short", "sell")):
+            pside_mode = getattr(self, f"{pside}_mode")
+            if pside_mode in ("manual", "tp_only"):
+                # manual no toca nada; tp_only nunca cancela entradas (no son del bot) y los
+                # cierres ya se conservan: ese lado queda sin cambios
+                continue
+            open_pside = [o for o in self.open_orders if o["position_side"] == pside]
+            if pside_mode == "panic":
+                cancel_, create_ = filter_orders(open_pside, self.rescate_panic_closes(pside), keys)
+                to_cancel += cancel_
+                to_create += create_
+            else:
+                to_cancel += [o for o in open_pside if o["side"] == entry_side]
+        results = []
+        if to_cancel:
+            results.append(await self.cancel_orders(to_cancel[: self.max_n_cancellations_per_batch]))
+        if to_create:
+            results.append(await self.create_orders(to_create[: self.max_n_orders_per_batch]))
+        return results
 
     def add_wallet_exposures_to_pos(self, position_: dict):
         position = position_.copy()
@@ -997,6 +1079,8 @@ class Bot:
                     + "halting order creations/cancellations"
                 )
                 return []
+            if self.rescate_sin_capital_propio():
+                return await self.rescate_cancel_and_create_sin_capital()
             ideal_orders = []
             all_orders = self.calc_orders()
             for o in all_orders:
@@ -1011,6 +1095,8 @@ class Bot:
                         f"updating position with REST API before creating initial entries.  Last price {self.price}"
                     )
                     await self.update_position()
+                    if self.rescate_sin_capital_propio():
+                        return await self.rescate_cancel_and_create_sin_capital()
                     all_orders = self.calc_orders()
                     break
             for o in all_orders:
