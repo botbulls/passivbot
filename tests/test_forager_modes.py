@@ -113,6 +113,8 @@ def forager(monkeypatch_module):
         "utc_ms",
         "make_get_filepath",
         "get_first_ohlcv_timestamps",
+        "is_binance_testnet",
+        "apply_binance_testnet_ccxt",
     ):
         setattr(procedures, name, lambda *a, **k: None)
     stubs["procedures"] = procedures
