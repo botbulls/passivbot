@@ -59,6 +59,7 @@ from njit_clock import (
     calc_clock_close_long,
     calc_clock_close_short,
 )
+from rescate_loan import LoanState
 from typing import Union, Dict, List
 
 import websockets
@@ -78,6 +79,9 @@ class Bot:
         self.ws_market = None
 
         self.hedge_mode = self.config["hedge_mode"] = True
+        self.rescate_loan = LoanState.from_env()
+        if self.rescate_loan is not None:
+            logging.info(f"rescate: activo, préstamo leído de {self.rescate_loan.path}")
         self.set_config(self.config)
         self.server_time = utc_ms()
 
@@ -385,6 +389,10 @@ class Bot:
             return False
 
     def adjust_wallet_balance(self, balance: float) -> float:
+        # rescate (colchón): dimensionar sobre capital propio = wallet - préstamo vigente.
+        # Solo aplica al balance que viene del exchange; assigned_balance no incluye el préstamo.
+        if self.rescate_loan is not None and self.assigned_balance is None:
+            balance = self.rescate_loan.balance_para_dimensionar(balance)
         return (
             balance if self.assigned_balance is None else self.assigned_balance
         ) * self.cross_wallet_pct
