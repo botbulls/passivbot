@@ -60,6 +60,7 @@ from njit_clock import (
     calc_clock_close_short,
 )
 from rescate_loan import LoanState
+from watcher_heartbeat import WatcherHeartbeat
 from typing import Union, Dict, List
 
 import websockets
@@ -85,6 +86,15 @@ class Bot:
         self.rescate_guard_log_interval = 50.0
         if self.rescate_loan is not None:
             logging.info(f"rescate: activo, préstamo leído de {self.rescate_loan.path}")
+        # dead-man del watcher de C3: sin latido en modo real no se abren entradas
+        self.watcher = WatcherHeartbeat.from_env()
+        self.watcher_guard_log_ts = 0.0  # > 0 mientras C3 está en real sin latido
+        self.watcher_guard_log_interval = 50.0
+        if self.watcher is not None:
+            logging.info(
+                f"watcher: dead-man activo, latido leído de {self.watcher.path}"
+                + f" (máximo {self.watcher.max_age:g} s)"
+            )
         self.set_config(self.config)
         self.server_time = utc_ms()
 
@@ -434,14 +444,34 @@ class Bot:
             }
         ]
 
-    async def rescate_cancel_and_create_sin_capital(self):
-        """Sin capital propio no se calculan órdenes nuevas.
+    def watcher_sin_latido(self) -> bool:
+        """True si C3 está en modo real y el watcher no late (ver watcher_heartbeat.py).
 
-        Se cancelan las entradas abiertas (long/buy, short/sell) y se conservan los cierres
-        que ya están en el exchange. Un lado en manual no se toca; un lado en panic arma su
-        cierre de pánico como siempre. En tp_only tampoco se toca nada, igual que en el flujo
-        normal, que en ese modo no cancela entradas.
+        Lee el archivo una vez: cancel_and_create lo llama una sola vez por ciclo.
+        Sin la env siempre da False y no se lee nada.
         """
+        if self.watcher is None:
+            return False
+        motivo = self.watcher.check()
+        if motivo is None:
+            if self.watcher_guard_log_ts:
+                logging.info(
+                    "watcher: el watcher late de nuevo (o C3 ya no está en real), "
+                    + "se vuelven a calcular las órdenes"
+                )
+                self.watcher_guard_log_ts = 0.0
+            return False
+        now = time.time()
+        if now - self.watcher_guard_log_ts >= self.watcher_guard_log_interval:
+            logging.critical(
+                f"watcher: C3 en modo real sin latido del watcher ({motivo}); no se abren "
+                + "entradas nuevas: se cancelan las entradas abiertas y se conservan los cierres"
+            )
+            self.watcher_guard_log_ts = now
+        return True
+
+    async def rescate_cancel_and_create_sin_capital(self):
+        """Sin capital propio no se calculan órdenes nuevas (ver cancelar_entradas_conservar_cierres)."""
         now = time.time()
         if now - self.rescate_guard_log_ts >= self.rescate_guard_log_interval:
             logging.critical(
@@ -449,6 +479,16 @@ class Bot:
                 + "se cancelan las entradas abiertas y se conservan los cierres"
             )
             self.rescate_guard_log_ts = now
+        return await self.cancelar_entradas_conservar_cierres()
+
+    async def cancelar_entradas_conservar_cierres(self):
+        """Mecanismo común de los guards (sin capital propio, C3 sin latido): no calc_orders.
+
+        Se cancelan las entradas abiertas (long/buy, short/sell) y se conservan los cierres
+        que ya están en el exchange. Un lado en manual no se toca; un lado en panic arma su
+        cierre de pánico como siempre. En tp_only tampoco se toca nada, igual que en el flujo
+        normal, que en ese modo no cancela entradas.
+        """
         keys = ["side", "position_side", "qty", "price"]
         to_cancel, to_create = [], []
         for pside, entry_side in (("long", "buy"), ("short", "sell")):
@@ -1079,8 +1119,14 @@ class Bot:
                     + "halting order creations/cancellations"
                 )
                 return []
+            # una sola lectura del latido por ciclo; los dos guards se evalúan siempre para que
+            # cada uno loguee su estado y su reanudación, y si los dos están activos se cancela
+            # una sola vez
+            sin_latido = self.watcher_sin_latido()
             if self.rescate_sin_capital_propio():
                 return await self.rescate_cancel_and_create_sin_capital()
+            if sin_latido:
+                return await self.cancelar_entradas_conservar_cierres()
             ideal_orders = []
             all_orders = self.calc_orders()
             for o in all_orders:
@@ -1095,6 +1141,7 @@ class Bot:
                         f"updating position with REST API before creating initial entries.  Last price {self.price}"
                     )
                     await self.update_position()
+                    # el latido ya se leyó en este ciclo y no bloqueaba; acá solo cambia el balance
                     if self.rescate_sin_capital_propio():
                         return await self.rescate_cancel_and_create_sin_capital()
                     all_orders = self.calc_orders()
