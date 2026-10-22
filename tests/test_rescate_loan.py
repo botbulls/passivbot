@@ -281,6 +281,7 @@ def make_bot(pb, monkeypatch):
     monkeypatch.setattr(pb, "load_exchange_key_secret_passphrase", lambda *a, **k: ("binance", "k", "s", "p"))
     monkeypatch.setattr(pb, "make_get_filepath", lambda p: p)
     monkeypatch.setattr(pb, "load_broker_code", lambda *a, **k: "")
+    monkeypatch.delenv("PASSIVBOT_WATCHER_HEARTBEAT", raising=False)  # dead-man apagado acá
 
     def _make(assigned_balance=None, cross_wallet_pct=1.0, mode="clock"):
         cfg = load_live_config(os.path.join(ROOT, CONFIGS_POR_MODO[mode]))
