@@ -6,9 +6,11 @@ Contrato: PASSIVBOT_WATCHER_HEARTBEAT apunta a un JSON {"c3_mode": off|dry_run|r
 """
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import os
+import stat
 import sys
 
 import pytest
@@ -16,9 +18,11 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import watcher_heartbeat  # noqa: E402
 from watcher_heartbeat import (  # noqa: E402
     DEFAULT_MAX_AGE_SECONDS,
     ENV_MAX_AGE,
+    MIN_MAX_AGE_SECONDS,
     ENV_PATH,
     HeartbeatError,
     WatcherHeartbeat,
@@ -91,7 +95,7 @@ def test_from_env_con_variable(tmp_path):
     assert WatcherHeartbeat.from_env({ENV_PATH: path, ENV_MAX_AGE: " 45.5 "}).max_age == 45.5
 
 
-@pytest.mark.parametrize("raw", ["0", "-5", "abc", "nan", "inf", "-inf", "1e999"])
+@pytest.mark.parametrize("raw", ["0", "-5", "abc", "nan", "inf", "-inf", "1e999", "0.001", "44.9"])
 def test_max_age_invalida_usa_default_y_loguea(tmp_path, caplog, raw):
     caplog.set_level(logging.INFO)
     hb = WatcherHeartbeat.from_env({ENV_PATH: str(tmp_path / "x.json"), ENV_MAX_AGE: raw})
@@ -105,6 +109,16 @@ def test_parse_max_age_vacia_es_default_sin_error():
     assert parse_max_age(None) == (120.0, None)
     assert parse_max_age("") == (120.0, None)
     assert parse_max_age("  ") == (120.0, None)
+
+
+def test_max_age_tiene_piso():
+    # 3 x 5 + 30: con el intervalo mínimo del servicio rescate, menos es un dead-man que salta
+    # con el watcher sano. 0.001 antes se aceptaba y bloqueaba en cada ciclo.
+    assert MIN_MAX_AGE_SECONDS == 45.0
+    assert parse_max_age("45") == (45.0, None)
+    value, error = parse_max_age("0.001")
+    assert value == DEFAULT_MAX_AGE_SECONDS
+    assert "mínimo 45 s" in error
 
 
 @pytest.mark.parametrize(
@@ -169,8 +183,14 @@ def test_real_fresco_no_bloquea(tmp_path, caplog):
     caplog.set_level(logging.INFO)
     path = tmp_path / "hb.json"
     write_hb(path, "real", NOW - 30)
-    assert make_hb(path).check() is None
-    assert watcher_records(caplog) == []
+    hb = make_hb(path)
+    assert hb.check() is None
+    assert hb.check() is None
+    # solo el INFO del primer latido válido, una vez
+    msgs = [(r.levelno, r.getMessage()) for r in watcher_records(caplog)]
+    assert msgs == [
+        (logging.INFO, f"watcher: primer latido válido en {path}: C3 en modo real (dead-man armado)")
+    ]
 
 
 def test_real_viejo_bloquea_en_la_primera_lectura(tmp_path):
@@ -260,6 +280,56 @@ def test_ausente_o_invalido_despues_de_real_valido_bloquea(tmp_path, caplog, rot
     assert "el último latido válido estaba en modo real" in errors[0].getMessage()
 
 
+JSON_ANIDADO_DE_MAS = "[" * 200_000  # json.loads levanta RecursionError, no ValueError
+
+
+def test_parse_json_anidado_de_mas_es_invalido():
+    with pytest.raises(HeartbeatError):
+        parse_heartbeat(JSON_ANIDADO_DE_MAS)
+
+
+def test_json_anidado_de_mas_despues_de_real_bloquea_sin_levantar(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    path = tmp_path / "hb.json"
+    write_hb(path, "real", NOW - 10)
+    hb = make_hb(path)
+    assert hb.check() is None
+    path.write_text(JSON_ANIDADO_DE_MAS)
+    assert hb.check() is not None
+    errors = watcher_records(caplog, logging.ERROR)
+    assert len(errors) == 1
+    assert "latido inválido" in errors[0].getMessage()
+
+
+def test_json_anidado_de_mas_sin_real_previo_no_bloquea(tmp_path):
+    path = tmp_path / "hb.json"
+    path.write_text(JSON_ANIDADO_DE_MAS)
+    assert make_hb(path).check() is None
+
+
+@pytest.mark.parametrize("donde", ["parse", "lectura"])
+def test_cualquier_excepcion_cuenta_como_archivo_invalido(tmp_path, monkeypatch, caplog, donde):
+    # check() no levanta nunca: una excepción que escapara cortaría el ciclo de órdenes sin
+    # cancelar las entradas que ya están en el exchange
+    caplog.set_level(logging.INFO)
+    path = tmp_path / "hb.json"
+    write_hb(path, "real", NOW - 10)
+    hb = make_hb(path)
+    assert hb.check() is None
+
+    def explota(*a, **k):
+        raise TypeError("inesperado")
+
+    if donde == "parse":
+        monkeypatch.setattr(watcher_heartbeat, "parse_heartbeat", explota)
+    else:
+        monkeypatch.setattr(watcher_heartbeat, "open", explota, raising=False)
+    assert hb.check() is not None
+    errors = watcher_records(caplog, logging.ERROR)
+    assert len(errors) == 1
+    assert "TypeError('inesperado')" in errors[0].getMessage()
+
+
 def test_real_luego_off_luego_ausente_no_bloquea(tmp_path):
     path = tmp_path / "hb.json"
     write_hb(path, "real", NOW - 10)
@@ -288,7 +358,34 @@ def test_vuelve_a_latir_y_desbloquea(tmp_path, caplog):
     write_hb(path, "real", NOW - 1)
     assert hb.check() is None
     infos = [r.getMessage() for r in watcher_records(caplog, logging.INFO)]
-    assert infos == [f"watcher: latido válido de nuevo en {path}"]
+    assert infos == [
+        f"watcher: primer latido válido en {path}: C3 en modo real (dead-man armado)",
+        f"watcher: latido válido de nuevo en {path}",
+    ]
+
+
+def test_info_con_el_primer_latido_y_en_cada_cambio_de_modo(tmp_path, caplog):
+    # para verificar un deploy: sin esto, "dead-man activo" solo prueba que llegó la env
+    caplog.set_level(logging.INFO)
+    path = tmp_path / "hb.json"
+    hb = make_hb(path)
+    write_hb(path, "off", NOW - 1)
+    hb.check()
+    hb.check()  # mismo modo: no repite
+    write_hb(path, "real", NOW - 1)
+    hb.check()
+    hb.check()
+    write_hb(path, "dry_run", NOW - 1)
+    hb.check()
+    write_hb(path, "real", NOW - 500)  # cambio de modo con latido viejo: también se loguea
+    assert hb.check() is not None
+    infos = [r.getMessage() for r in watcher_records(caplog, logging.INFO)]
+    assert infos == [
+        f"watcher: primer latido válido en {path}: C3 en modo off (dead-man sin efecto)",
+        "watcher: C3 pasó de modo off a real (dead-man armado)",
+        "watcher: C3 pasó de modo real a dry_run (dead-man sin efecto)",
+        "watcher: C3 pasó de modo dry_run a real (dead-man armado)",
+    ]
 
 
 def test_error_de_lectura_rate_limited(tmp_path, caplog):
@@ -316,6 +413,67 @@ def test_relee_el_archivo_en_cada_check(tmp_path):
     assert hb.check() is not None
     write_hb(path, "real", hb.clock.now)
     assert hb.check() is None
+
+
+# ---------------------------------------------------------------- contrato con el watcher del dashboard
+
+# Lo que escribe futuresboard/c3.py (dashboard): heartbeat_payload() arma
+# {"version": 1, "ts": now_iso(ts), "c3_mode": ..., "c3_parado": bool} y write_heartbeat() lo
+# escribe con rescate.write_json_atomic(..., mode=0o644): json.dumps(indent=1,
+# ensure_ascii=False) + "\n", tmp + fsync + chmod + os.replace. now_iso() es
+# datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds").
+C3_HEARTBEAT_REAL = '{\n "version": 1,\n "ts": "2027-01-15T08:00:00+00:00",\n "c3_mode": "real",\n "c3_parado": false\n}\n'
+
+
+def now_iso_dashboard(ts):
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def test_contrato_formato_de_now_iso_del_dashboard():
+    assert now_iso_dashboard(NOW) == "2027-01-15T08:00:00+00:00"
+    assert parse_ts(now_iso_dashboard(NOW - 37)) == NOW - 37
+
+
+def test_contrato_lo_que_escribe_c3_del_dashboard(tmp_path):
+    assert parse_heartbeat(C3_HEARTBEAT_REAL) == {"c3_mode": "real", "ts": NOW}
+    path = tmp_path / "watcher_heartbeat.json"
+    for c3_mode in ("off", "dry_run", "real"):
+        for parado in (False, True):
+            payload = {"version": 1, "ts": now_iso_dashboard(NOW - 20), "c3_mode": c3_mode, "c3_parado": parado}
+            tmp = tmp_path / ".watcher_heartbeat.json.tmp"
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+            hb = make_hb(path)
+            assert hb.check() is None
+            assert hb.last_valid_mode == c3_mode  # se leyó como válido: el dead-man se arma con real
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o644
+
+
+DASHBOARD_SRC = os.environ.get("BOTBULLS_DASHBOARD_SRC")
+
+
+@pytest.mark.skipif(not DASHBOARD_SRC, reason="opt-in: BOTBULLS_DASHBOARD_SRC=<dashboard>/src")
+def test_contrato_con_el_writer_real_del_dashboard(tmp_path, monkeypatch):
+    # cruza los dos repos: escribe con futuresboard.c3.write_heartbeat y lee con parse_heartbeat
+    monkeypatch.syspath_prepend(DASHBOARD_SRC)
+    import pathlib
+
+    from futuresboard import c3
+
+    path = tmp_path / "watcher_heartbeat.json"
+    c3.write_heartbeat(pathlib.Path(path), "real", False, NOW)
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == C3_HEARTBEAT_REAL  # el golden de arriba es lo que escribe hoy
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o644  # passivbot lo lee con otro uid
+    for c3_mode in ("off", "dry_run", "real"):
+        for parado in (False, True):
+            c3.write_heartbeat(pathlib.Path(path), c3_mode, parado, NOW - 20)
+            with open(path, encoding="utf-8") as f:
+                assert parse_heartbeat(f.read()) == {"c3_mode": c3_mode, "ts": NOW - 20}
+            hb = make_hb(path)
+            assert hb.check() is None
+            assert hb.last_valid_mode == c3_mode
 
 
 # ---------------------------------------------------------------- integración con passivbot.Bot
@@ -438,6 +596,19 @@ def test_bot_archivo_roto_despues_de_real_valido_bloquea(wbot, rotura):
         bot.hb_path.unlink()
     else:
         bot.hb_path.write_text('{"c3_mode": "real", "ts": ')
+    bot.calls.update(calc_orders=0, cancel=[], create=[])
+    calls = run_cycle(bot)
+    assert calls["calc_orders"] == 0
+    assert ids(calls["cancel"]) == [1, 3]
+    assert calls["create"] == []
+
+
+def test_bot_json_anidado_de_mas_despues_de_real_cancela_entradas(wbot):
+    # antes, el RecursionError salía de cancel_and_create: no se cancelaba nada y las entradas
+    # que ya estaban en el exchange seguían vivas
+    bot = wbot("fresco")
+    assert run_cycle(bot)["calc_orders"] == 1
+    bot.hb_path.write_text(JSON_ANIDADO_DE_MAS)
     bot.calls.update(calc_orders=0, cancel=[], create=[])
     calls = run_cycle(bot)
     assert calls["calc_orders"] == 0
