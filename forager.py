@@ -30,6 +30,11 @@ from procedures import (
 from njit_funcs import calc_emas
 from pure_funcs import determine_pos_side_ccxt, date_to_ts2
 from forager_modes import resolve_config_modes, stops_new_symbols, pane_modes
+from forager_live_configs import (
+    LiveConfigsManifestWriter,
+    fill_live_configs_map_from_dir,
+    resolve_live_config_path,
+)
 
 
 def score_func_old(ohlcv):
@@ -199,21 +204,12 @@ def generate_yaml(
             config.get("long_mode_code"),
             config.get("short_mode_code"),
         )
-        if sym in config["live_configs_map_long"]:
-            conf_path_long = config["live_configs_map_long"][sym]
-        elif sym in config["live_configs_map"]:
-            conf_path_long = config["live_configs_map"][sym]
-        else:
-            conf_path_long = config["default_config_path"]
+        conf_path_long = resolve_live_config_path(config, sym, "long")
 
         if sym not in (shorts_on_gs + active_shorts):
             conf_path_short = conf_path_long
-        elif sym in config["live_configs_map_short"]:
-            conf_path_short = config["live_configs_map_short"][sym]
-        elif sym in config["live_configs_map"]:
-            conf_path_short = config["live_configs_map"][sym]
         else:
-            conf_path_short = config["default_config_path"]
+            conf_path_short = resolve_live_config_path(config, sym, "short")
 
         if sym not in (longs_on_gs + active_longs):
             conf_path_long = conf_path_short
@@ -417,7 +413,7 @@ async def get_min_costs_and_contract_multipliers(cc):
     return min_costs, c_mults
 
 
-async def dump_yaml(cc, config):
+async def dump_yaml(cc, config, on_markets=None):
     max_min_cost = config["max_min_cost"]
     print("getting min costs...")
     min_costs, c_mults = await get_min_costs_and_contract_multipliers(cc)
@@ -425,22 +421,14 @@ async def dump_yaml(cc, config):
     symbols_map_inv = {v: k for k, v in symbols_map.items()}
 
     for side in ["long", "short"]:
-        if config[f"live_configs_dir_{side}"] and os.path.exists(config[f"live_configs_dir_{side}"]):
-            fnames = sorted(
-                [f for f in os.listdir(config[f"live_configs_dir_{side}"]) if f.endswith(".json")]
-            )
-            if fnames:
-                for symbol in symbols_map_inv:
-                    fnamesf = [f for f in fnames if symbol in f]
-                    if fnamesf and not any(
-                        [
-                            symbol in x
-                            for x in [config[f"live_configs_map_{side}"], config["live_configs_map"]]
-                        ]
-                    ):
-                        config[f"live_configs_map_{side}"][symbol] = os.path.join(
-                            config[f"live_configs_dir_{side}"], fnamesf[0]
-                        )
+        fill_live_configs_map_from_dir(config, symbols_map_inv, side)
+
+    if on_markets is not None:
+        # manifiesto de configs live (forager_live_configs.py): nunca frena a forager
+        try:
+            on_markets(list(symbols_map_inv), getattr(cc, "id", None))
+        except Exception as e:
+            print(f"live_configs_manifest: error inesperado: {e!r}")
 
     approved = [
         symbols_map[k] for k, v in min_costs.items() if v <= max_min_cost and k in symbols_map
@@ -628,8 +616,13 @@ async def main():
                     )
             else:
                 config[f"approved_symbols_{side}"] = []
+    # manifiesto de configs live para el dashboard: indice al arrancar, simbolos al cargar
+    # los markets (forager_live_configs.py). Un fallo se loguea y no frena a forager.
+    manifest_writer = LiveConfigsManifestWriter(config, args.forager_config_path)
+    manifest_writer.write()
     exchange, key, secret, passphrase = load_exchange_key_secret_passphrase(config["user"])
     binance_testnet = exchange == "binance" and is_binance_testnet(config["user"])
+    manifest_writer.testnet = binance_testnet
     if binance_testnet:
         print("BINANCE TESTNET (demo trading) enabled for forager")
     max_n_tries_per_hour = 5
@@ -641,7 +634,7 @@ async def main():
             )
             if binance_testnet:
                 apply_binance_testnet_ccxt(cc)
-            await dump_yaml(cc, config)
+            await dump_yaml(cc, config, on_markets=manifest_writer.on_markets)
             print("waiting one minute to avoid API rate limiting...")
             for i in range(60, -1, -1):
                 time.sleep(1)
